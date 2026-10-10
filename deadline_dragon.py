@@ -305,31 +305,29 @@ class DragonApp:
         # Small contact shadow grounds the upright pose.
         oval(-69, 75, 69, 85, fill="#253548", outline="")
 
-        # Paired bat wings: red skin panels stretched over a blue finger-bone frame.
+        # Bat wings: a single scalloped membrane, with the finger bones kept
+        # inside its silhouette and joined cleanly at the wrist.
         wingbeat = math.sin(t * (2.1 + rage * 4.2)) * (3 + rage * 6)
-        wing_outline = [(0, 4), (9, -20), (27, -43), (53, -63),
-                        (83, -80), (112, -78), (117, -57),
-                        (99, -58), (82, -36), (66, -40),
-                        (48, -17), (31, -22), (18, 2)]
+        wing_outline = [(0, 4), (10, -24), (34, -50), (66, -73),
+                        (102, -91), (128, -94), (122, -69),
+                        (106, -77), (92, -43), (76, -55),
+                        (59, -16), (43, -31), (26, 5)]
         for side in (-1, 1):
-            # One continuous membrane with scalloped edges; supports stay sparse.
-            wing_shape(side, [(x+2,y+3) for x,y in wing_outline], wingbeat,
-                       fill="#10263a", outline="")
-            wing_shape(side, wing_outline, wingbeat, fill="#bd3048",
-                       outline=ink, width=lw, smooth=True, splinesteps=20,
+            wing_shape(side, wing_outline, wingbeat, fill="#b92f46",
+                       outline=ink, width=lw, smooth=True, splinesteps=24,
                        joinstyle=tk.ROUND)
-            wing_shape(side, [(7,-2),(25,-32),(52,-58),(83,-74),
-                              (105,-72),(97,-62),(78,-46),(62,-40),
-                              (46,-22),(30,-23),(17,1)], wingbeat,
-                       fill="#e84b50", outline="", smooth=True, splinesteps=18)
-            # Three graceful blue digits divide the membrane into broad panels.
-            wing_bone(side, [(4,2),(25,-31),(55,-60),(84,-77),(111,-76)], wingbeat, 7)
-            wing_bone(side, [(25,-31),(64,-40),(98,-59)], wingbeat, 5)
-            # Soft membrane shadows tuck under each finger; no extra wire lattice.
-            wing_shape(side, [(27,-29),(48,-49),(43,-27),(31,-15)], wingbeat,
-                       fill="#a82741", outline="")
-            wing_shape(side, [(51,-49),(78,-56),(62,-38),(49,-27)], wingbeat,
-                       fill="#a82741", outline="")
+            # A restrained inset gives the membrane depth without spilling
+            # beyond the scalloped edge or covering the blue structure.
+            wing_shape(side, [(8,-3),(35,-46),(66,-68),(99,-85),
+                              (112,-86),(101,-80),(87,-52),(74,-59),
+                              (58,-25),(42,-36),(25,-1)], wingbeat,
+                       fill="#e14a50", outline="", smooth=True, splinesteps=20)
+            # The long leading finger and three shorter digits fan out from
+            # the wrist like a real bat wing; each ends exactly at the edge.
+            wing_bone(side, [(0,3),(22,-31),(56,-65),(95,-87),(126,-93)], wingbeat, 7)
+            wing_bone(side, [(22,-31),(121,-70)], wingbeat, 5)
+            wing_bone(side, [(22,-31),(91,-44)], wingbeat, 5)
+            wing_bone(side, [(22,-31),(59,-17)], wingbeat, 5)
 
         # A tapered, jointed snake tail follows a hip-driven wave.
         tail_sway = math.sin(t * (1.4 + rage * 4.2)) * (7 + rage * 11)
@@ -410,20 +408,21 @@ class DragonApp:
             line(-half*.58,y-2,0,y,half*.58,y-2,
                  fill=belly_hi,width=max(1,round(1.4*s)),smooth=True,capstyle=tk.ROUND)
 
-        # Arms attach below each shoulder: deltoids, biceps, elbows, forearms and hands.
+        # Arms attach below each shoulder, with highlights contained inside
+        # the outline so no bright paint appears to leak around the edges.
         for side in (-1,1):
-            arm=[(28,-55),(39,-63),(53,-58),(63,-43),(65,-27),
-                 (59,-12),(54,-2),(46,-7),(44,-23),(37,-34)]
-            mirrored_poly(side,[(x,y+3) for x,y in arm],
-                          fill="#061d31",outline=ink,width=lw,smooth=True,splinesteps=18)
+            arm=[(27,-56),(34,-63),(44,-65),(54,-58),(61,-46),(64,-33),
+                 (62,-20),(56,-8),(49,-4),(43,-8),(42,-18),(45,-28),
+                 (39,-37),(33,-44)]
             mirrored_poly(side,arm,fill=blue,outline=ink,width=lw,
                           smooth=True,splinesteps=18)
-            oval(side*45-12,-56,side*45+12,-32,
-                 fill=light_blue,outline=ink,width=max(1,round(1.6*s)))
-            line(side*39,-49,side*48,-41,side*55,-28,
-                 fill="#8fe5f2",width=max(1,round(2*s)),capstyle=tk.ROUND,smooth=True)
-            oval(side*52-9,-19,side*52+9,-2,
-                 fill=blue,outline=ink,width=max(1,round(1.8*s)))
+            mirrored_poly(side,[(34,-55),(39,-59),(47,-56),(50,-50),
+                                (45,-46),(37,-49)],fill=light_blue,outline="",
+                          smooth=True,splinesteps=12)
+            line(side*38,-44,side*45,-38,side*50,-29,
+                 fill="#54c8e7",width=max(1,round(1.5*s)),capstyle=tk.ROUND,smooth=True)
+            line(side*51,-19,side*54,-15,
+                 fill="#0874ae",width=max(1,round(1.4*s)),capstyle=tk.ROUND)
             oval(side*50-11,-3,side*50+12,19,
                  fill=blue,outline=ink,width=lw)
             for finger in (-1,0,1):
@@ -432,14 +431,6 @@ class DragonApp:
                      fill=blue,width=max(3,round(4.2*s)),capstyle=tk.ROUND,smooth=True)
                 line(fx+side*2,19,fx+side*4,23,
                      fill="#f7f1dd",width=max(1,round(1.8*s)),capstyle=tk.ROUND)
-
-        # Shoulder plates and highlight planes add muscle volume to the chest.
-        for side in (-1,1):
-            for j in range(3):
-                x=side*(31+j*4); y=-39+j*10
-                poly(x-4,y-2,x,y-5,x+4,y-1,x,y+4,
-                     fill="#44c5e6",outline="")
-        oval(-36,-45,-24,-31,fill="#64d5ed",outline="")
 
         # A tidy pair of small frills frames the crown without crowding the arms.
         for side in (-1, 1):
@@ -522,9 +513,6 @@ class DragonApp:
                  51,-64,29,-69,fill="#ff982e",outline="",smooth=True)
             poly(29,-73,45,-79,29+flame_length*.48,-72,48,-68,29,-70,
                  fill="#fff3ae",outline="",smooth=True)
-            pulse=(math.sin(t*5)+1)/2
-            oval(-69-pulse*2,-155-pulse*2,69+pulse*2,85+pulse*2,
-                 fill="",outline="#df5748",width=max(1,round(rage*2)))
 
         next_particles=[]
         for x,y,age,velocity in self.particles[-16:]:
