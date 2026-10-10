@@ -205,7 +205,7 @@ class DragonApp:
                 if self.urgency <= u1:
                     self.target_rgb = mix(c0,c1,(self.urgency-u0)/(u1-u0)); break
             else: self.target_rgb = stops[-1][1]
-        self.target_scale = .82 + .27*self.urgency
+        self.target_scale = .77 + .25*self.urgency
         self.target_rage = {"sleeping": 0.0, "calm": .04, "alert": .18,
                             "angry": .48, "furious": .84,
                             "overdue": 1.0}[self.mood]
@@ -279,6 +279,8 @@ class DragonApp:
             c.create_polygon(*coords(values), **kw)
 
         def wing_point(side, x, y, angle):
+            # Keep the wings compact without changing their shoulder hinge.
+            x, y = x * .92, y * .92
             a = math.radians(angle)
             co, si = math.cos(a), math.sin(a)
             xr, yr = x * co - y * si, x * si + y * co
@@ -322,12 +324,13 @@ class DragonApp:
                               (112,-86),(101,-80),(87,-52),(74,-59),
                               (58,-25),(42,-36),(25,-1)], wingbeat,
                        fill="#e14a50", outline="", smooth=True, splinesteps=20)
-            # The long leading finger and three shorter digits fan out from
-            # the wrist like a real bat wing; each ends exactly at the edge.
-            wing_bone(side, [(0,3),(22,-31),(56,-65),(95,-87),(126,-93)], wingbeat, 7)
-            wing_bone(side, [(22,-31),(121,-70)], wingbeat, 5)
-            wing_bone(side, [(22,-31),(91,-44)], wingbeat, 5)
-            wing_bone(side, [(22,-31),(59,-17)], wingbeat, 5)
+            # Shoulder to wrist forms the leading arm; the long digits fan
+            # from that wrist and meet the scallops instead of crossing them.
+            wrist = (53, -62)
+            wing_bone(side, [(0,3),(22,-30),wrist,(94,-86),(126,-93)], wingbeat, 7)
+            wing_bone(side, [wrist,(121,-70)], wingbeat, 5)
+            wing_bone(side, [wrist,(92,-43)], wingbeat, 5)
+            wing_bone(side, [wrist,(59,-17)], wingbeat, 5)
 
         # A tapered, jointed snake tail follows a hip-driven wave.
         tail_sway = math.sin(t * (1.4 + rage * 4.2)) * (7 + rage * 11)
