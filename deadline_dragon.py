@@ -210,19 +210,19 @@ class DragonApp:
         t = now - self.started
         s = self.scale
         urgent = self.urgency
-        roaring = now < self.roar_until
         angry = self.mood in ("angry", "furious", "overdue")
-        fire = roaring or self.mood in ("furious", "overdue")
-        rgb = self.rgb
-        body = color(rgb)
-        shadow = "#173849"
-        ink = "#173849"
-        belly = "#ffe8b5"
-        belly_shadow = "#e5b96f"
-        highlight = color(mix(rgb, (255, 255, 255), .46))
-        bob = math.sin(t * 2.4) * 3.2
-        cx, cy = 160, 246 + bob
-        line_width = max(2, round(3.2 * s))
+        fire = now < self.roar_until or self.mood in ("furious", "overdue")
+        # Keep the mascot's signature blue; urgency changes the HUD and effects.
+        blue = color(mix((14, 164, 224), (19, 121, 207), urgent * .28))
+        blue_light = color(mix((81, 216, 242), (80, 173, 236), urgent * .2))
+        blue_dark = "#0874ae"
+        outline = "#09283d"
+        orange = "#ff963f"
+        orange_light = "#ffc06a"
+        red = "#e54a45"
+        bob = math.sin(t * 2.2) * 2.5
+        cx, cy = 190, 242 + bob
+        line_w = max(2, round(3.2 * s))
 
         def p(x, y):
             return cx + x * s, cy + y * s
@@ -234,9 +234,7 @@ class DragonApp:
             return result
 
         def oval(x1, y1, x2, y2, **kw):
-            x1, y1 = p(x1, y1)
-            x2, y2 = p(x2, y2)
-            c.create_oval(x1, y1, x2, y2, **kw)
+            c.create_oval(*p(x1, y1), *p(x2, y2), **kw)
 
         def poly(*xy, **kw):
             c.create_polygon(*coords(xy), **kw)
@@ -244,201 +242,235 @@ class DragonApp:
         def line(*xy, **kw):
             c.create_line(*coords(xy), **kw)
 
-        def wing(points, angle, fill):
-            radians = math.radians(angle)
-            cosine, sine = math.cos(radians), math.sin(radians)
-            rotated = []
-            for i in range(0, len(points), 2):
-                x, y = points[i], points[i + 1]
-                rotated.extend((-16 + x * cosine - y * sine,
-                                -31 + x * sine + y * cosine))
-            c.create_polygon(*coords(rotated), fill=fill, outline=ink,
-                             width=line_width, smooth=True, splinesteps=18,
+        def wing(side, flap):
+            # Broad bat wing, mirrored on each side and hinged at the shoulder.
+            points = [(0, 0), (9, -22), (37, -65), (70, -88),
+                      (66, -55), (108, -66), (86, -39), (124, -32),
+                      (91, -13), (64, -20), (38, -16), (20, 5)]
+            angle = math.radians(side * flap)
+            co, si = math.cos(angle), math.sin(angle)
+            transformed = []
+            for x, y in points:
+                x *= side
+                transformed.extend((side * 31 + x * co - y * si,
+                                    -47 + x * si + y * co))
+            c.create_polygon(*coords(transformed), fill="#d94249", outline=outline,
+                             width=line_w, smooth=True, splinesteps=20,
                              joinstyle=tk.ROUND)
-            return rotated
+            # Colored membrane panels and ribs give the wings real structure.
+            panels = ((side * 36, -49, side * 97, -112,
+                       side * 76, -69, side * 39, -38),
+                      (side * 42, -47, side * 126, -79,
+                       side * 88, -51, side * 45, -32),
+                      (side * 44, -43, side * 121, -43,
+                       side * 89, -31, side * 53, -27))
+            for panel in panels:
+                poly(*panel, fill="#f05b52", outline="")
+            for x, y in ((side * 96, -108), (side * 119, -75),
+                         (side * 116, -42), (side * 90, -31)):
+                line(side * 33, -45, x, y, fill="#09283d",
+                     width=max(1, round(1.7 * s)), capstyle=tk.ROUND,
+                     smooth=True)
+            line(side * 37, -48, side * 64, -81, side * 94, -101,
+                 fill="#ff9b72", width=max(1, round(1.5 * s)),
+                 capstyle=tk.ROUND, smooth=True)
 
-        # A soft little shadow grounds the floating mascot.
-        oval(-71, 66, 72, 78, fill="#293348", outline="")
+        # Ground shadow and a gentle aura only when the dragon is worked up.
+        oval(-70, 75, 70, 84, fill="#27374a", outline="")
+        flap = math.sin(t * (2.8 + urgent * 1.2)) * (7 + 4 * urgent)
+        wing(-1, flap)
+        wing(1, flap)
 
-        # Two rounded wings flap from the same shoulder in a slow, readable arc.
-        flap = math.sin(t * (3.2 + urgent * 1.4))
-        far_wing = [-4, 0, -12, -35, -48, -93, -42, -83,
-                    -42, -112, -22, -94, -12, -120, 1, -94, 15, -72, 24, -42]
-        near_wing = [-1, 0, -1, -30, 19, -70, 24, -48,
-                     42, -67, 40, -42, 55, -54, 50, -27, 37, -9]
-        wing(far_wing, -8 + flap * 15, "#568a91")
-        # Wing ribs are animated with the membrane and end in soft rounded tips.
-        for x1, y1, x2, y2 in ((-8, -35, -47, -91), (-12, -35, -41, -108),
-                               (-10, -33, -20, -92), (-7, -31, 4, -92)):
-            line(x1, y1, x2, y2 + flap * 5, fill="#9bd0bf",
-                 width=max(1, round(1.8 * s)), capstyle=tk.ROUND, smooth=True)
-        wing(near_wing, 7 - flap * 12, "#78b9a2")
+        # Long curling tail with a row of red dorsal spikes.
+        sway = math.sin(t * 1.7) * 7
+        line(-34, 32, -61, 49, -90, 43 + sway * .45,
+             -117, 54 + sway, -141, 42 + sway,
+             fill=outline, width=max(7, round(22 * s)), smooth=True,
+             capstyle=tk.ROUND, joinstyle=tk.ROUND)
+        line(-34, 32, -61, 49, -90, 43 + sway * .45,
+             -117, 54 + sway, -141, 42 + sway,
+             fill=blue, width=max(4, round(16 * s)), smooth=True,
+             capstyle=tk.ROUND, joinstyle=tk.ROUND)
+        for x, y in ((-57, 43), (-78, 42 + sway * .3),
+                     (-99, 48 + sway * .6), (-119, 49 + sway)):
+            poly(x - 7, y + 2, x, y - 12, x + 8, y + 4,
+                 fill=red, outline=outline, width=max(1, round(1.5 * s)))
+        poly(-139, 42 + sway, -154, 32 + sway, -165, 35 + sway,
+             -160, 46 + sway, -166, 56 + sway, -150, 53 + sway,
+             -139, 61 + sway, -132, 50 + sway,
+             fill=blue, outline=outline, width=line_w, smooth=True,
+             splinesteps=16)
 
-        # Tail swishes in a gentle S curve; its heart-shaped spade has an outline.
-        sway = math.sin(t * 2.1) * 7
-        line(-39, 20, -69, 34 + sway * .35, -94, 30 + sway,
-             -111, 45 + sway, fill=ink, width=max(7, round(18 * s)),
-             capstyle=tk.ROUND, joinstyle=tk.ROUND, smooth=True)
-        line(-39, 19, -69, 33 + sway * .35, -94, 29 + sway,
-             -111, 44 + sway, fill=body, width=max(4, round(12 * s)),
-             capstyle=tk.ROUND, joinstyle=tk.ROUND, smooth=True)
-        poly(-112, 44 + sway, -127, 33 + sway, -138, 35 + sway,
-             -136, 47 + sway, -143, 55 + sway, -128, 54 + sway,
-             -117, 61 + sway, fill="#f3bd55", outline=ink, width=line_width,
+        # Back spikes silhouette, then short sturdy legs and clawed feet.
+        poly(-43, -31, -54, -49, -37, -47, -30, -68,
+             -16, -52, 0, -70, 12, -49, 29, -64, 35, -36,
+             fill=red, outline=outline, width=line_w,
              smooth=True, splinesteps=16)
+        step = math.sin(t * 2.2) * 2
+        for x, lift in ((-31, max(0, step)), (16, max(0, -step))):
+            line(x, 34, x - 3, 64 - lift, fill=outline,
+                 width=max(8, round(23 * s)), capstyle=tk.ROUND, smooth=True)
+            line(x, 34, x - 3, 63 - lift, fill=blue,
+                 width=max(5, round(17 * s)), capstyle=tk.ROUND, smooth=True)
+            oval(x - 17, 56 - lift, x + 17, 78 - lift,
+                 fill=blue, outline=outline, width=line_w)
+            for toe in (-12, -2, 8):
+                oval(x + toe, 65 - lift, x + toe + 12, 77 - lift,
+                     fill=blue_light, outline=outline,
+                     width=max(1, round(1.5 * s)))
+                poly(x + toe + 3, 73 - lift, x + toe + 7, 81 - lift,
+                     x + toe + 11, 73 - lift,
+                     fill="#f5f1dd", outline=outline,
+                     width=max(1, round(1.2 * s)))
 
-        # Back spikes peek above the body like a soft cartoon crest.
-        poly(-49, -13, -53, -36, -36, -28, -30, -53, -14, -34,
-             -3, -56, 10, -34, 23, -48, 27, -20,
-             fill="#3c806e", outline=ink, width=line_width,
-             smooth=True, splinesteps=16, joinstyle=tk.ROUND)
+        # Upright body, with the reference's bold orange plated belly.
+        oval(-47, -58, 47, 55, fill=blue, outline=outline, width=line_w)
+        poly(-24, -79, -32, -54, -30, -16, -25, 26,
+             -16, 48, 16, 48, 25, 26, 30, -16, 32, -54, 24, -79,
+             fill=orange, outline=outline, width=max(2, round(2.4 * s)),
+             smooth=True, splinesteps=18)
+        for y in (-57, -38, -18, 3, 24):
+            line(-27, y, -14, y + 4, 0, y + 5, 14, y + 4, 27, y,
+                 fill="#a84939", width=max(1, round(1.7 * s)),
+                 smooth=True, capstyle=tk.ROUND)
+            line(-18, y - 2, 0, y, 18, y - 2,
+                 fill=orange_light, width=max(1, round(1.1 * s)),
+                 smooth=True)
 
-        # Little boots and three rounded claws; limbs bounce with the idle loop.
-        step = math.sin(t * 2.4) * 2.0
-        for bx, lift in ((-35, max(0, step)), (10, max(0, -step))):
-            oval(bx - 3, 31 - lift, bx + 30, 63 - lift,
-                 fill=ink, outline=ink, width=line_width)
-            oval(bx, 29 - lift, bx + 27, 57 - lift,
-                 fill=body, outline=ink, width=line_width)
-            for toe in (bx + 3, bx + 12, bx + 21):
-                oval(toe, 49 - lift, toe + 8, 60 - lift,
-                     fill=belly, outline=ink, width=max(1, round(1.5 * s)))
+        # Arms curve down from the shoulders; hands open into three claws.
+        for side in (-1, 1):
+            arm = (side * 36, -43, side * 49, -20, side * 56, 3,
+                   side * 50, 20)
+            line(*arm, fill=outline, width=max(8, round(21 * s)),
+                 capstyle=tk.ROUND, joinstyle=tk.ROUND, smooth=True)
+            line(*arm, fill=blue, width=max(5, round(15 * s)),
+                 capstyle=tk.ROUND, joinstyle=tk.ROUND, smooth=True)
+            oval(side * 43 - 8, 10, side * 43 + 11, 30,
+                 fill=blue, outline=outline, width=line_w)
+            for j in range(3):
+                claw_x = side * 43 + side * (j - 1) * 7
+                line(claw_x, 25, claw_x + side * 3, 33,
+                     fill="#f5f1dd", width=max(1, round(2 * s)),
+                     capstyle=tk.ROUND)
 
-        # Compact pear-shaped body with a bright cream belly plate.
-        body_points = [-48, -28, -51, -2, -43, 27, -22, 43,
-                       7, 48, 35, 31, 46, 5, 40, -25,
-                       15, -47, -20, -49]
-        c.create_polygon(*coords(body_points), fill=body, outline=ink,
-                         width=line_width, smooth=True, splinesteps=22,
-                         joinstyle=tk.ROUND)
-        oval(-22, -13, 30, 39, fill=belly, outline=ink,
-             width=max(1, round(1.5 * s)))
-        for y in (-3, 8, 19, 29):
-            line(-17, y, 1, y + 4, 24, y,
-                 fill=belly_shadow, width=max(1, round(1.6 * s)), smooth=True)
+        # Neck and large round head with two bright, expressive eyes.
+        oval(-27, -105, 27, -53, fill=blue, outline=outline, width=line_w)
+        oval(-54, -146, 54, -62, fill=blue, outline=outline, width=line_w)
+        # Rounded cheek pads and temple scales.
+        oval(-53, -100, -28, -73, fill=blue_light, outline=outline,
+             width=max(1, round(1.8 * s)))
+        oval(28, -100, 53, -73, fill=blue_light, outline=outline,
+             width=max(1, round(1.8 * s)))
+        for side in (-1, 1):
+            for y in (-91, -81):
+                oval(side * 43 - 3, y, side * 43 + 1, y + 4,
+                     fill="#8ce5f1", outline="")
 
-        # One chunky arm waves hello; the other rests on the belly.
-        arm_wave = math.sin(t * 3.0) * 7
-        line(-35, -15, -54, -2 + arm_wave, -58, -15 + arm_wave,
-             fill=ink, width=max(7, round(15 * s)), capstyle=tk.ROUND,
-             joinstyle=tk.ROUND, smooth=True)
-        line(-35, -15, -54, -2 + arm_wave, -58, -15 + arm_wave,
-             fill=body, width=max(4, round(10 * s)), capstyle=tk.ROUND,
-             joinstyle=tk.ROUND, smooth=True)
-        oval(-67, -24 + arm_wave, -51, -7 + arm_wave,
-             fill=body, outline=ink, width=line_width)
-        for claw in (-64, -59, -54):
-            line(claw, -22 + arm_wave, claw - 2, -28 + arm_wave,
-                 fill=belly, width=max(1, round(2 * s)), capstyle=tk.ROUND)
-        line(22, 0, 40, 8, 34, 20,
-             fill=ink, width=max(6, round(12 * s)), capstyle=tk.ROUND,
-             smooth=True)
-        line(22, 0, 40, 8, 34, 20,
-             fill=body, width=max(3, round(8 * s)), capstyle=tk.ROUND,
-             smooth=True)
+        # Curved horns with segmented highlights, plus a flame-shaped crest.
+        for side in (-1, 1):
+            horn_x = side * 37
+            poly(horn_x - 12, -133, horn_x - 19, -157,
+                 horn_x - 15, -170, horn_x - 5, -150,
+                 horn_x + 11, -133,
+                 fill="#eee9db", outline=outline, width=line_w,
+                 smooth=True, splinesteps=16)
+            line(horn_x - 13, -151, horn_x - 4, -147,
+                 fill="#aaa99f", width=max(1, round(1.5 * s)), smooth=True)
+            line(horn_x - 14, -160, horn_x - 6, -157,
+                 fill="#aaa99f", width=max(1, round(1.5 * s)), smooth=True)
+        poly(-10, -137, -7, -162, 7, -150, 15, -137,
+             fill="#ff743f", outline=outline, width=line_w,
+             smooth=True, splinesteps=14)
+        # Small side spines add a bright red silhouette around the head.
+        for side, y in ((-1, -116), (1, -117), (-1, -96), (1, -96)):
+            x = side * (50 if y < -105 else 53)
+            poly(x - 3, y - 7, x + side * 12, y - 1,
+                 x - 2, y + 7, fill="#f05b43", outline=outline,
+                 width=max(1, round(1.5 * s)), smooth=True)
 
-        # Large round head: oversized cheeks and muzzle make the silhouette cute.
-        head_y = -77 + bob * .12
-        oval(-8, head_y - 58, 84, head_y + 24,
-             fill=ink, outline=ink, width=line_width)
-        oval(-5, head_y - 62, 80, head_y + 20,
-             fill=body, outline=ink, width=line_width)
-        # Ear frills and horns sit behind the face.
-        poly(-2, head_y - 29, -27, head_y - 43, -18, head_y - 17,
-             fill="#4d9b7d", outline=ink, width=line_width, smooth=True)
-        poly(13, head_y - 54, 5, head_y - 88, 29, head_y - 60,
-             fill=belly, outline=ink, width=line_width, smooth=True)
-        poly(42, head_y - 58, 54, head_y - 94, 64, head_y - 54,
-             fill=belly, outline=ink, width=line_width, smooth=True)
-        line(14, head_y - 62, 12, head_y - 79,
-             fill="#fff8df", width=max(1, round(2 * s)), capstyle=tk.ROUND)
-        line(49, head_y - 64, 53, head_y - 82,
-             fill="#fff8df", width=max(1, round(2 * s)), capstyle=tk.ROUND)
-
-        # A giant expressive eye with a moving pupil and a clear highlight.
-        eye_top, eye_bottom = head_y - 43, head_y - 3
-        blink_phase = t % 4.7
-        blink = blink_phase < .16 or (angry and blink_phase > 4.35)
+        blink_phase = t % 4.8
+        blink = blink_phase < .14
+        look = 2.2 if angry else math.sin(t * .75) * 2
         if blink:
-            line(17, head_y - 22, 31, head_y - 17, 47, head_y - 23,
-                 fill=ink, width=max(2, round(4 * s)), smooth=True)
+            for side in (-1, 1):
+                line(side * 35, -111, side * 21, -106, side * 7, -111,
+                     fill=outline, width=max(2, round(4 * s)), smooth=True)
         else:
-            oval(11, eye_top, 52, eye_bottom, fill="#fffaf0",
-                 outline=ink, width=line_width)
-            look = 2 if angry else math.sin(t * .9) * 2
-            oval(24 + look, head_y - 35, 43 + look, head_y - 7,
-                 fill="#54a9c4" if not angry else "#e87953",
-                 outline="", width=0)
-            oval(31 + look, head_y - 33, 39 + look, head_y - 8,
-                 fill=ink, outline="")
-            oval(28 + look, head_y - 31, 34 + look, head_y - 24,
-                 fill="white", outline="")
-            oval(37 + look, head_y - 16, 40 + look, head_y - 13,
-                 fill="#d8f5eb", outline="")
-        if angry:
-            line(8, head_y - 49, 27, head_y - 44, 51, head_y - 49,
-                 fill=ink, width=max(2, round(5 * s)), smooth=True)
-        else:
-            line(10, head_y - 48, 28, head_y - 52, 45, head_y - 48,
-                 fill=ink, width=max(1, round(2.4 * s)), smooth=True)
+            for side in (-1, 1):
+                ex = side * 21
+                oval(ex - 16, -128, ex + 16, -94,
+                     fill="#fffdf3", outline=outline, width=line_w)
+                oval(ex - 9 + look, -123, ex + 8 + look, -98,
+                     fill="#27bd9a" if not angry else "#ffbd42", outline="")
+                oval(ex - 4 + look, -121, ex + 4 + look, -99,
+                     fill=outline, outline="")
+                oval(ex - 5 + look, -120, ex - 1 + look, -115,
+                     fill="white", outline="")
+                oval(ex + 3 + look, -105, ex + 6 + look, -102,
+                     fill="#d9ffff", outline="")
+        # Eyebrows lift when calm and tilt inward when deadlines get close.
+        for side in (-1, 1):
+            if angry:
+                line(side * 39, -135, side * 23, -132,
+                     side * 7, -137, fill=outline,
+                     width=max(2, round(4 * s)), smooth=True)
+            else:
+                line(side * 38, -133, side * 22, -138,
+                     side * 7, -133, fill=outline,
+                     width=max(2, round(3 * s)), smooth=True)
 
-        # Rounded snout, nostrils, rosy cheek, and a tiny toothy grin.
-        oval(48, head_y - 27, 111, head_y + 8,
-             fill=ink, outline=ink, width=line_width)
-        oval(51, head_y - 31, 109, head_y + 4,
-             fill=highlight, outline=ink, width=line_width)
-        oval(91, head_y - 16, 98, head_y - 10, fill=ink, outline="")
-        oval(101, head_y - 15, 106, head_y - 10, fill=ink, outline="")
-        oval(67, head_y - 4, 88, head_y + 5,
-             fill="#c84e52", outline=ink, width=max(1, round(1.5 * s)))
-        line(66, head_y - 4, 83, head_y - 1, 93, head_y - 7,
-             fill=ink, width=max(1, round(2 * s)), smooth=True)
-        poly(74, head_y - 4, 81, head_y - 4, 79, head_y + 2,
-             fill="white", outline="")
-        for x in (57, 63, 69):
-            oval(x, head_y - 12, x + 2.5, head_y - 9,
-                 fill="#f3b4a2", outline="")
+        # Wide muzzle, nostrils and a friendly smile with two tiny fangs.
+        oval(-38, -101, 38, -66, fill=blue_light,
+             outline=outline, width=line_w)
+        oval(-26, -97, -4, -77, fill="#49c5e9", outline="")
+        oval(4, -97, 26, -77, fill="#49c5e9", outline="")
+        oval(-21, -91, -12, -84, fill=outline, outline="")
+        oval(12, -91, 21, -84, fill=outline, outline="")
+        line(-28, -78, -16, -71, 0, -75, 16, -71, 28, -78,
+             fill=outline, width=max(2, round(2.4 * s)),
+             smooth=True, capstyle=tk.ROUND)
+        for x in (-19, 12):
+            poly(x, -77, x + 7, -76, x + 5, -68,
+                 fill="#fffdf3", outline=outline,
+                 width=max(1, round(1.1 * s)))
 
-        # Fire is a layered ribbon with a wobbling tip; no frame-to-frame flicker.
+        # Layered fire breath when furious, overdue, or freshly poked.
+        flame_length = 0
         if fire:
-            flame_length = (52 + 22 * urgent) * (1.12 if roaring else 1)
-            flicker = math.sin(t * 15)
-            poly(103, head_y - 8,
-                 103 + flame_length * .28, head_y - 17 - flicker * 3,
-                 103 + flame_length, head_y - 5 + flicker * 5,
-                 103 + flame_length * .55, head_y + 6,
-                 fill="#ef6048", outline=ink, width=max(1, round(1.5 * s)),
-                 smooth=True, splinesteps=14)
-            poly(103, head_y - 7,
-                 103 + flame_length * .27, head_y - 12 - flicker * 2,
-                 103 + flame_length * .72, head_y - 3 + flicker * 2,
-                 103 + flame_length * .48, head_y + 2,
-                 fill="#ffbd4f", outline="", smooth=True)
-            poly(103, head_y - 6,
-                 103 + flame_length * .24, head_y - 9,
-                 103 + flame_length * .45, head_y - 3,
-                 103 + flame_length * .34, head_y,
-                 fill="#fff2ad", outline="", smooth=True)
+            flame_length = 60 + 24 * urgent
+            flick = math.sin(t * 14)
+            poly(31, -80, 55, -92 - flick * 3,
+                 31 + flame_length, -74 + flick * 4,
+                 57, -61, 31, -69,
+                 fill="#e84b3f", outline=outline,
+                 width=max(1, round(1.6 * s)), smooth=True, splinesteps=16)
+            poly(31, -78, 53, -85 - flick * 2,
+                 31 + flame_length * .76, -73 + flick * 2,
+                 54, -66, 31, -70,
+                 fill="#ff9c35", outline="", smooth=True)
+            poly(31, -76, 49, -81,
+                 31 + flame_length * .49, -73,
+                 50, -70, 31, -71,
+                 fill="#fff1a5", outline="", smooth=True)
 
-        # Small embers drift upward; their count stays fixed and inexpensive.
+        # A few warm embers drift from the flame without random frame flicker.
         next_particles = []
         for x, y, age, velocity in self.particles[-16:]:
             age += .045
             y -= velocity * s
             x += math.sin(t * 5 + age * 9) * .45 * s
             if age < 1:
-                radius = max(1, (1 - age) * 3.5 * s)
+                radius = max(1, (1 - age) * 3 * s)
                 c.create_oval(x - radius, y - radius, x + radius, y + radius,
-                              fill="#ffce69" if age < .55 else "#f07855", outline="")
+                              fill="#ffd16b" if age < .55 else "#f07855", outline="")
                 next_particles.append([x, y, age, velocity])
         self.particles = next_particles
         if fire and now >= self.next_ember_at and len(self.particles) < 16:
-            self.particles.append([cx + (112 + flame_length) * s,
-                                   cy + (head_y - 5) * s, 0,
-                                   1.2 + (int(t * 25) % 4) * .22])
+            x, y = p(31 + flame_length, -73)
+            self.particles.append([x, y, 0, 1.25])
             self.next_ember_at = now + .12
 
-        # Status card stays small and legible, like a game HUD above the mascot.
+        # The compact status card remains visually separate from the mascot.
         text = self.quip if now < self.quip_until else self.label
         card_w = min(W - 24, max(206, min(350, 34 + len(text) * 6.2)))
         x1, y1 = (W - card_w) / 2, 12
@@ -446,15 +478,15 @@ class DragonApp:
         c.create_rectangle(x1 + 2, y1 + 3, x2 + 2, y2 + 3,
                            fill="#11131f", outline="")
         c.create_rectangle(x1, y1, x2, y2, fill="#242638",
-                           outline=color(mix(rgb, (255, 255, 255), .15)), width=1)
-        c.create_oval(x1 + 12, y1 + 13, x1 + 26, y1 + 27, fill=body, outline="")
+                           outline=color(mix(self.rgb, (255, 255, 255), .15)), width=1)
+        c.create_oval(x1 + 12, y1 + 13, x1 + 26, y1 + 27,
+                      fill=color(self.rgb), outline="")
         c.create_text(x1 + 34, (y1 + y2) / 2, text=text, anchor="w",
                       fill="#f6f1e7", font=("Segoe UI", 10, "bold"))
         mx1, my, mx2 = x1 + 12, y2 - 5, x2 - 12
         c.create_line(mx1, my, mx2, my, fill="#414356", width=2)
         c.create_line(mx1, my, mx1 + (mx2 - mx1) * urgent, my,
-                      fill=color(rgb), width=2)
-
+                      fill=color(self.rgb), width=2)
     def slay(self,rid):
         self.store.done(rid); self.roar_until=time.time()+1.2; self.refresh()
         self.say(f"A mighty victory! {self.store.slain()} deadline{'s' if self.store.slain()!=1 else ''} conquered.",4)
