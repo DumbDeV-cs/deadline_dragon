@@ -1,10 +1,8 @@
-"""Deadline Dragon - a desktop dragon that gets bigger and angrier as deadlines close in.
+"""Deadline Dragon: a tiny animated desktop companion for your deadlines.
 
-Run:  python deadline_dragon.py
-
-- Drag the dragon with the left mouse button; click it (without dragging) to poke it.
-- Right-click for the menu (add / manage deadlines, quit).
-- Dates can be YYYY-MM-DD, DD-MM-YYYY, or just a number of days from today (e.g. 5).
+Run with: python deadline_dragon.py
+Drag the dragon to move it, left-click to poke, right-click for the menu.
+Dates accept YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY, or a number of days.
 """
 
 import math
@@ -18,514 +16,392 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 DB_PATH = Path(__file__).with_name("deadline_dragon.db")
-W, H = 340, 300
-KEY = "#010203"      # colour treated as see-through on Windows
-BONE = "#f5e6c8"
-INK = "#1e1e2e"
-
-# urgency 0..1 -> colour ramp (green -> yellow -> orange -> red)
-RAMP = [
-    (0.0, (76, 175, 80)),
-    (0.4, (242, 194, 0)),
-    (0.7, (255, 122, 0)),
-    (1.0, (229, 57, 53)),
-]
-SLEEP_RGB = (96, 125, 139)
-OVERDUE_RGB = (140, 30, 70)
-
-QUIPS = {
-    "sleeping": ["zzz... no deadlines...", "Add a deadline. I'm bored.", "Feed me a due date."],
-    "calm": ["Plenty of time. Don't get cocky.", "I'm watching you.", "Enjoy it while it lasts."],
-    "alert": ["Start revising.", "Less scrolling, more studying.", "I can feel it getting closer."],
-    "angry": ["This is getting close!", "Why are you on Instagram?", "Open the notes. Now."],
-    "furious": ["STUDY. NOW.", "I WILL BURN YOUR NOTES.", "Do you even see the date?!"],
-    "overdue": ["...you missed one.", "I smell smoke. It's me.", "Slay it or face me."],
-}
+W, H = 390, 340
+KEY = "#010203"
+INK = "#171827"
+CREAM = "#fff0c9"
 
 
-# ---------------------------------------------------------------- helpers
 def clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 
-def lerp(a, b, t):
-    return a + (b - a) * t
+def mix(a, b, t):
+    return tuple(round(x + (y - x) * t) for x, y in zip(a, b))
 
 
-def lerp_rgb(a, b, t):
-    return tuple(lerp(x, y, t) for x, y in zip(a, b))
+def color(rgb):
+    return "#%02x%02x%02x" % tuple(int(clamp(v, 0, 255)) for v in rgb)
 
 
-def hexc(rgb):
-    r, g, b = (int(clamp(v, 0, 255)) for v in rgb)
-    return f"#{r:02x}{g:02x}{b:02x}"
+def shade(rgb, amount):
+    return mix(rgb, (0, 0, 0), 1 - amount)
 
 
-def shade(rgb, k):
-    return hexc(tuple(v * k for v in rgb))
-
-
-def ramp(u):
-    u = clamp(u, 0.0, 1.0)
-    for (u0, c0), (u1, c1) in zip(RAMP, RAMP[1:]):
-        if u <= u1:
-            return lerp_rgb(c0, c1, (u - u0) / (u1 - u0))
-    return RAMP[-1][1]
-
-
-def parse_due(text):
-    text = text.strip()
-    if text.isdigit():
-        return date.today() + timedelta(days=int(text))
+def parse_due(value):
+    value = value.strip()
+    if value.isdigit():
+        return date.today() + timedelta(days=int(value))
     for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
         try:
-            return datetime.strptime(text, fmt).date()
+            return datetime.strptime(value, fmt).date()
         except ValueError:
             pass
     raise ValueError("Use YYYY-MM-DD, DD-MM-YYYY, or a number of days from today.")
 
 
+def days_left(due):
+    return (date.fromisoformat(due) - date.today()).days
+
+
 def when_text(days):
     if days < 0:
-        return f"{-days}d overdue"
-    if days == 0:
-        return "today!"
-    if days == 1:
-        return "tomorrow"
-    return f"in {days} days"
+        return f"{abs(days)}d overdue"
+    return ("today!" if days == 0 else "tomorrow" if days == 1 else f"in {days} days")
 
 
-def days_left(due_iso):
-    return (date.fromisoformat(due_iso) - date.today()).days
-
-
-# ---------------------------------------------------------------- storage
 class Store:
     def __init__(self, path):
-        self.conn = sqlite3.connect(str(path))
-        self.conn.execute(
-            """CREATE TABLE IF NOT EXISTS deadlines (
-                   id INTEGER PRIMARY KEY AUTOINCREMENT,
-                   title TEXT NOT NULL,
-                   due TEXT NOT NULL,
-                   done INTEGER NOT NULL DEFAULT 0,
-                   created_at TEXT NOT NULL,
-                   done_at TEXT
-               )"""
-        )
-        self.conn.commit()
-
-    def add(self, title, due_iso):
-        self.conn.execute(
-            "INSERT INTO deadlines (title, due, created_at) VALUES (?, ?, ?)",
-            (title, due_iso, datetime.now().isoformat(timespec="seconds")),
-        )
-        self.conn.commit()
+        self.db = sqlite3.connect(str(path))
+        self.db.execute("""CREATE TABLE IF NOT EXISTS deadlines (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL,
+            due TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL, done_at TEXT)""")
+        self.db.commit()
 
     def pending(self):
-        cur = self.conn.execute(
-            "SELECT id, title, due FROM deadlines WHERE done = 0 ORDER BY due, id"
-        )
-        return cur.fetchall()
+        return self.db.execute("SELECT id,title,due FROM deadlines WHERE done=0 ORDER BY due,id").fetchall()
 
-    def mark_done(self, rid):
-        self.conn.execute(
-            "UPDATE deadlines SET done = 1, done_at = ? WHERE id = ?",
-            (datetime.now().isoformat(timespec="seconds"), rid),
-        )
-        self.conn.commit()
+    def add(self, title, due):
+        self.db.execute("INSERT INTO deadlines(title,due,created_at) VALUES(?,?,?)",
+                        (title, due, datetime.now().isoformat(timespec="seconds")))
+        self.db.commit()
+
+    def done(self, rid):
+        self.db.execute("UPDATE deadlines SET done=1,done_at=? WHERE id=?",
+                        (datetime.now().isoformat(timespec="seconds"), rid))
+        self.db.commit()
 
     def delete(self, rid):
-        self.conn.execute("DELETE FROM deadlines WHERE id = ?", (rid,))
-        self.conn.commit()
+        self.db.execute("DELETE FROM deadlines WHERE id=?", (rid,))
+        self.db.commit()
 
     def slain(self):
-        return self.conn.execute("SELECT COUNT(*) FROM deadlines WHERE done = 1").fetchone()[0]
+        return self.db.execute("SELECT COUNT(*) FROM deadlines WHERE done=1").fetchone()[0]
 
 
-# ---------------------------------------------------------------- the dragon
 class DragonApp:
-    def __init__(self, root, db_path=DB_PATH):
-        self.root = root
-        self.store = Store(db_path)
-        self.manager = None
-
-        # state driven by the nearest deadline
-        self.mood = "sleeping"
-        self.urgency = 0.0
-        self.label = ""
-        self.scale = 0.5
-        self.target_scale = 0.5
-        self.rgb = SLEEP_RGB
-        self.target_rgb = SLEEP_RGB
-
-        # animation state
-        self.t0 = time.time()
-        self.roar_until = 0.0
-        self.quip = ""
-        self.quip_until = 0.0
-
-        self._setup_window()
-        self._bind_events()
+    def __init__(self, root):
+        self.root, self.store = root, Store(DB_PATH)
+        self.mood, self.urgency, self.label = "sleeping", 0.0, "No deadlines yet · right-click to add one"
+        self.scale, self.target_scale = .82, .82
+        self.rgb = (83, 190, 145)
+        self.target_rgb = self.rgb
+        self.started = time.time()
+        self.roar_until = 0
+        self.quip, self.quip_until = "", 0
+        self.particles = []
+        self._window()
+        self._events()
         self.refresh()
-        self.rgb, self.scale = self.target_rgb, self.target_scale
         self.tick()
         self.refresh_loop()
 
-    # ---- window ----
-    def _setup_window(self):
-        root = self.root
-        root.title("Deadline Dragon")
-        root.overrideredirect(True)
-        root.attributes("-topmost", True)
-
+    def _window(self):
+        r = self.root
+        r.title("Deadline Dragon")
+        r.overrideredirect(True)
+        r.attributes("-topmost", True)
         bg = INK
         try:
             if sys.platform.startswith("win"):
-                root.wm_attributes("-transparentcolor", KEY)
-                bg = KEY
+                r.wm_attributes("-transparentcolor", KEY); bg = KEY
             elif sys.platform == "darwin":
-                root.wm_attributes("-transparent", True)
-                root.config(bg="systemTransparent")
-                bg = "systemTransparent"
+                r.wm_attributes("-transparent", True); r.config(bg="systemTransparent"); bg = "systemTransparent"
             else:
-                root.wm_attributes("-transparentcolor", KEY)
-                bg = KEY
+                r.wm_attributes("-transparentcolor", KEY); bg = KEY
         except tk.TclError:
-            bg = INK  # no transparency support: fall back to a solid backdrop
-
-        self.canvas = tk.Canvas(root, width=W, height=H, bg=bg, highlightthickness=0, bd=0)
+            pass
+        self.canvas = tk.Canvas(r, width=W, height=H, bg=bg, highlightthickness=0, bd=0)
         self.canvas.pack()
+        sw, sh = r.winfo_screenwidth(), r.winfo_screenheight()
+        r.geometry(f"{W}x{H}+{sw-W-32}+{sh-H-72}")
 
-        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-        root.geometry(f"{W}x{H}+{sw - W - 40}+{sh - H - 80}")
-
-    def _bind_events(self):
-        cv = self.canvas
-        cv.bind("<ButtonPress-1>", self.on_press)
-        cv.bind("<B1-Motion>", self.on_drag)
-        cv.bind("<ButtonRelease-1>", self.on_release)
-
+    def _events(self):
+        c = self.canvas
+        c.bind("<ButtonPress-1>", self.press)
+        c.bind("<B1-Motion>", self.drag)
+        c.bind("<ButtonRelease-1>", self.release)
         self.menu = tk.Menu(self.root, tearoff=0)
-        self.menu.add_command(label="Add / manage deadlines...", command=self.open_manager)
-        self.menu.add_command(label="Poke the dragon", command=self.poke)
+        self.menu.add_command(label="＋  Add / manage deadlines", command=self.open_manager)
+        self.menu.add_command(label="✦  Poke the dragon", command=self.poke)
         self.menu.add_separator()
         self.menu.add_command(label="Quit", command=self.root.destroy)
-
         for seq in ("<Button-3>", "<Button-2>", "<Control-Button-1>"):
-            cv.bind(seq, self.popup)
-        self.root.bind("<Escape>", lambda e: self.root.destroy())
+            c.bind(seq, self.popup)
+        self.root.bind("<Escape>", lambda _e: self.root.destroy())
+        self.root.bind("<space>", lambda _e: self.poke())
 
-    def popup(self, event):
-        try:
-            self.menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            self.menu.grab_release()
+    def popup(self, e):
+        try: self.menu.tk_popup(e.x_root, e.y_root)
+        finally: self.menu.grab_release()
 
-    def on_press(self, e):
+    def press(self, e):
         self.press_xy = (e.x_root, e.y_root)
-        self.drag_off = (e.x_root - self.root.winfo_x(), e.y_root - self.root.winfo_y())
+        self.drag_off = (e.x_root-self.root.winfo_x(), e.y_root-self.root.winfo_y())
         self.moved = False
 
-    def on_drag(self, e):
-        if abs(e.x_root - self.press_xy[0]) + abs(e.y_root - self.press_xy[1]) > 4:
+    def drag(self, e):
+        if abs(e.x_root-self.press_xy[0])+abs(e.y_root-self.press_xy[1]) > 5:
             self.moved = True
         if self.moved:
-            self.root.geometry(f"+{e.x_root - self.drag_off[0]}+{e.y_root - self.drag_off[1]}")
+            self.root.geometry(f"+{e.x_root-self.drag_off[0]}+{e.y_root-self.drag_off[1]}")
 
-    def on_release(self, _e):
-        if not getattr(self, "moved", False):
-            self.poke()
+    def release(self, _e):
+        if not self.moved: self.poke()
 
-    # ---- behaviour ----
-    def say(self, text, secs=4.0):
-        self.quip = text
-        self.quip_until = time.time() + secs
+    def say(self, text, seconds=3.5):
+        self.quip, self.quip_until = text, time.time()+seconds
 
     def poke(self):
-        self.say(random.choice(QUIPS[self.mood]), 3.0)
-
-    def roar(self, secs=1.4):
-        self.roar_until = time.time() + secs
-
-    def slay(self, rid):
-        self.store.mark_done(rid)
-        self.roar()
-        self.refresh()
-        self.say(f"ROAR! Slain: {self.store.slain()}", 3.5)
+        lines = {"sleeping":"A tiny snack? Try a deadline.", "calm":"I have my eye on you.",
+                 "alert":"We should probably make a start.", "angry":"Less scrolling. More doing.",
+                 "furious":"FOCUS. I believe in you. Mostly.", "overdue":"We can still recover this. Move!"}
+        self.say(lines[self.mood], 3.5)
+        self.roar_until = time.time()+.55
 
     def refresh(self):
         rows = self.store.pending()
-        old_mood = self.mood
+        old = self.mood
         if not rows:
-            self.mood, self.urgency = "sleeping", 0.0
-            self.label = "No deadlines. Feed me one."
-            self.target_rgb = SLEEP_RGB
+            self.mood, self.urgency = "sleeping", 0
+            self.label, self.target_rgb = "No deadlines yet · right-click to add one", (83, 190, 145)
         else:
             _rid, title, due = rows[0]
             d = days_left(due)
-            if d < 0:
-                self.mood, self.urgency = "overdue", 1.0
-            else:
-                self.urgency = clamp(1 - d / 21, 0.0, 1.0)
-                if d <= 2:
-                    self.mood = "furious"
-                elif d <= 6:
-                    self.mood = "angry"
-                elif d <= 13:
-                    self.mood = "alert"
-                else:
-                    self.mood = "calm"
-            short = title if len(title) <= 20 else title[:19] + "…"
-            self.label = f"{short} · {when_text(d)}"
-            self.target_rgb = OVERDUE_RGB if self.mood == "overdue" else ramp(self.urgency)
-        self.target_scale = 0.5 + 0.55 * self.urgency
-        if self.mood != old_mood and time.time() > self.quip_until:
-            self.say(random.choice(QUIPS[self.mood]), 4.0)
+            self.urgency = 1 if d < 0 else clamp(1-d/21, 0, 1)
+            self.mood = ("overdue" if d < 0 else "furious" if d <= 2 else "angry" if d <= 6
+                         else "alert" if d <= 13 else "calm")
+            self.label = f"{title[:27]}{'…' if len(title)>27 else ''}  ·  {when_text(d)}"
+            stops = [(0,(65,188,139)),(.42,(234,196,72)),(.72,(255,137,65)),(1,(247,83,86))]
+            for (u0,c0),(u1,c1) in zip(stops,stops[1:]):
+                if self.urgency <= u1:
+                    self.target_rgb = mix(c0,c1,(self.urgency-u0)/(u1-u0)); break
+            else: self.target_rgb = stops[-1][1]
+        self.target_scale = .82 + .27*self.urgency
+        if old != self.mood and time.time() > self.quip_until:
+            self.say({"sleeping":"I'm all ears. And horns.","calm":"Plenty of time. Make it count.",
+                      "alert":"The clock is starting to breathe fire.","angry":"This one is getting close!",
+                      "furious":"Two days. We can do this.","overdue":"Okay. No panic. Let's tackle it."}[self.mood])
 
     def refresh_loop(self):
-        self.refresh()
-        self.root.after(30_000, self.refresh_loop)
+        self.refresh(); self.root.after(30000, self.refresh_loop)
 
     def tick(self):
-        self.scale += (self.target_scale - self.scale) * 0.06
-        self.rgb = lerp_rgb(self.rgb, self.target_rgb, 0.06)
+        self.scale += (self.target_scale-self.scale)*.07
+        self.rgb = mix(self.rgb,self.target_rgb,.07)
         self.draw()
-        self.root.after(40, self.tick)
+        self.root.after(33, self.tick)
 
-    # ---- drawing ----
     def draw(self):
-        cv = self.canvas
-        cv.delete("all")
-        now = time.time()
-        t = now - self.t0
-        s = self.scale
-        mood = self.mood
+        c = self.canvas; c.delete("all")
+        now = time.time(); t = now-self.started; s = self.scale
+        urgent = self.urgency
         roaring = now < self.roar_until
-        fire = roaring or mood in ("furious", "overdue")
-        angry = mood in ("angry", "furious", "overdue")
-
-        rgb = self.rgb
-        body, dark, light = hexc(rgb), shade(rgb, 0.65), shade(rgb, 1.3)
-        lw = max(1, round(2 * s))
-
-        bob = math.sin(t * 2.2) * 4 * s
-        shake = random.uniform(-4, 4) if roaring else 0
-        cx, cy = 146 + shake, 175 + bob
-
-        def p(x, y):
-            return cx + x * s, cy + y * s
-
-        def flat(xy):
-            out = []
-            for i in range(0, len(xy), 2):
-                out.extend(p(xy[i], xy[i + 1]))
+        fire = roaring or self.mood in ("furious","overdue")
+        angry = self.mood in ("angry","furious","overdue")
+        rgb = self.rgb; body=color(rgb); dark=color(shade(rgb,.52)); mid=color(shade(rgb,.78))
+        hi=color(mix(rgb,(255,255,255),.32)); accent="#ffd16a"
+        bob=math.sin(t*2.25)*3.4*s; cx,cy=177,bob+190
+        jitter=random.uniform(-2,2) if roaring else 0; cx+=jitter
+        def p(x,y): return (cx+x*s,cy+y*s)
+        def coords(values):
+            out=[]
+            for i in range(0,len(values),2): out.extend(p(values[i],values[i+1]))
             return out
+        def oval(x1,y1,x2,y2,**kw): c.create_oval(*p(x1,y1),*p(x2,y2),**kw)
+        def poly(*xy,**kw): c.create_polygon(*coords(xy),**kw)
+        def line(*xy,**kw): c.create_line(*coords(xy),**kw)
+        lw=max(1,int(2*s))
 
-        def oval(x1, y1, x2, y2, **kw):
-            cv.create_oval(*p(x1, y1), *p(x2, y2), **kw)
+        # soft ground shadow and little ambient halo
+        oval(-75,61,82,76,fill="#252637",outline="")
+        halo=color(mix(rgb,(255,255,255),.82))
+        oval(-77,-105,89,64,fill="",outline=halo,width=1)
 
-        def poly(*xy, **kw):
-            cv.create_polygon(*flat(xy), **kw)
+        # wing membrane: segmented silhouette, animated from the shoulder
+        flap=math.sin(t*(2.4+urgent*3.4))* (9+urgent*10)
+        poly(-14,-31,-70,-88-flap,-62,-44-flap*.45,-38,-73-flap*.8,-27,-34,
+             -5,-65-flap*.55,5,-32,fill=dark,outline=color(shade(rgb,.4)),width=lw,smooth=True)
+        for pts in ((-16,-36,-60,-80-flap),(-25,-39,-50,-45-flap*.5),(-31,-39,-35,-68-flap*.75)):
+            line(*pts,fill=mid,width=max(1,int(2*s)),smooth=True)
 
-        def line(*xy, **kw):
-            cv.create_line(*flat(xy), **kw)
+        # curled tail with a luminous arrow tip
+        sway=math.sin(t*1.7)*8
+        line(-48,20,-79,35+sway*.5,-105,27+sway,-120,42+sway,
+             fill=body,width=max(5,int(17*s)),smooth=True,capstyle=tk.ROUND)
+        line(-84,32+sway*.5,-108,29+sway,fill=hi,width=max(1,int(2*s)),smooth=True)
+        poly(-118,34+sway,-141,26+sway,-134,44+sway,-146,55+sway,-117,49+sway,
+             fill=accent,outline=dark,width=lw)
 
-        # wings (behind everything)
-        flap = math.sin(t * (3 + 5 * self.urgency)) * (10 + 8 * self.urgency)
-        if mood == "sleeping":
-            flap = math.sin(t * 1.2) * 3
-        poly(-10, -35, -62, -100 + flap, -38, -72 + flap * 0.5, -8, -118 + flap,
-             8, -74 + flap * 0.4, 40, -98 + flap, 25, -35,
-             fill=dark, outline=shade(rgb, 0.45), width=lw)
+        # back silhouette and neck
+        poly(-42,-18,-52,-38,-38,-33,-29,-52,-19,-34,-6,-52,1,-29,18,-45,23,-23,
+             fill=dark,outline="")
+        line(18,-28,37,-53,fill=body,width=max(5,int(30*s)),capstyle=tk.ROUND,smooth=True)
 
-        # tail
-        sway = math.sin(t * 2) * 8
-        ty = 34 + sway * 1.5
-        line(-45, 15, -80, 32, -105, 20 + sway, -126, ty,
-             fill=body, width=max(2, int(16 * s)), smooth=True, capstyle=tk.ROUND)
-        poly(-122, ty - 10, -138, ty, -122, ty + 10, fill=dark, outline="")
+        # sturdy legs, claws and torso
+        for bx in (-39,11):
+            oval(bx,32,bx+34,61,fill=dark,outline=color(shade(rgb,.4)),width=lw)
+            oval(bx+4,35,bx+29,55,fill=body,outline="")
+            for dx in (4,14,24):
+                poly(bx+dx,57,bx+dx+5,67,bx+dx+9,57,fill=CREAM,outline="")
+        oval(-56,-43,47,48,fill=dark,outline=color(shade(rgb,.42)),width=lw)
+        oval(-52,-46,42,41,fill=body,outline="")
+        # belly plate and engraved curved bands
+        oval(-18,-21,35,39,fill=hi,outline=color(shade(rgb,.78)),width=1)
+        for i in range(4):
+            y=-11+i*12
+            line(-13,y,1,y+3,20,y,fill=color(mix(rgb,(255,255,255),.12)),width=max(1,int(1.5*s)),smooth=True)
+        # shoulder scales catch the light
+        for row in range(3):
+            for col in range(4):
+                x=-39+col*12+(row%2)*5; y=-23+row*11
+                if x < -15 or y < 2:
+                    poly(x,y,x+4,y+3,x+8,y,x+4,y+7,fill=mid,outline="")
 
-        # legs
-        for bx in (-42, 8):
-            oval(bx, 36, bx + 30, 62, fill=body, outline=dark, width=lw)
-            for dx in (4, 12, 20):
-                poly(bx + dx, 60, bx + dx + 4, 67, bx + dx + 8, 60, fill=BONE, outline="")
-
-        # body + belly
-        oval(-55, -45, 45, 50, fill=body, outline=dark, width=lw)
-        oval(-22, -18, 38, 46, fill=light, outline="")
-        for i in range(3):
-            y = -2 + i * 15
-            line(-12, y, 14, y + 4, 30, y, fill=shade(rgb, 1.0), width=lw, smooth=True)
-
-        # back spikes
-        for i in range(5):
-            x = -45 + i * 17
-            y = 2.5 - 47.5 * math.sqrt(max(0.0, 1 - ((x + 5) / 50) ** 2))
-            poly(x - 6, y + 4, x, y - 14, x + 6, y + 4, fill=dark, outline="")
-
-        # neck, head, snout
-        line(22, -25, 46, -55, fill=body, width=max(2, int(30 * s)), capstyle=tk.ROUND)
-        oval(25, -90, 80, -35, fill=body, outline=dark, width=lw)
-        oval(58, -76, 110, -48, fill=body, outline=dark, width=lw)
-        oval(56, -74, 78, -50, fill=body, outline="")
-
-        # horns
-        poly(36, -84, 30, -114, 50, -88, fill=BONE, outline=dark, width=lw)
-        poly(52, -88, 54, -118, 68, -84, fill=BONE, outline=dark, width=lw)
-
-        # eye
-        ex, ey = 64, -70
-        closed = mood == "sleeping" or (t % 4.0) < 0.12
-        if closed:
-            line(55, ey, 64, ey + 3, 73, ey, fill=dark, width=lw + 1, smooth=True)
+        # head silhouette, ears and cheek
+        oval(23,-91,80,-34,fill=dark,outline=color(shade(rgb,.4)),width=lw)
+        oval(26,-94,77,-38,fill=body,outline="")
+        poly(44,-82,55,-73,39,-69,fill=hi,outline="")
+        oval(58,-77,111,-48,fill=dark,outline=color(shade(rgb,.4)),width=lw)
+        oval(58,-80,106,-52,fill=body,outline="")
+        # horn pair with shaded base
+        poly(33,-86,27,-119,47,-91,fill=CREAM,outline=dark,width=lw)
+        poly(52,-88,57,-121,69,-88,fill=CREAM,outline=dark,width=lw)
+        line(34,-89,30,-109,fill="#fff9e8",width=max(1,int(2*s)))
+        line(55,-91,59,-112,fill="#fff9e8",width=max(1,int(2*s)))
+        # expressive eye, brow, shine
+        blink=(t%4.8)<.13
+        if blink:
+            line(51,-69,64,-66,77,-70,fill=dark,width=max(2,int(4*s)),smooth=True)
         else:
-            iris = "#ffeb3b" if mood in ("furious", "overdue") else "#ffffff"
-            oval(ex - 8, ey - 7, ex + 8, ey + 7, fill=iris, outline=dark, width=lw)
-            if angry:
-                oval(ex, ey - 6, ex + 4, ey + 6, fill="black", outline="")
-                line(ex - 12, ey - 13, ex + 12, ey - 2, fill=dark, width=lw + 2)
-            else:
-                oval(ex - 1, ey - 4, ex + 5, ey + 4, fill="black", outline="")
-
-        # nostril + mouth
-        oval(100, -66, 105, -61, fill=dark, outline="")
+            oval(49,-78,76,-55,fill="#fff8e8",outline=dark,width=lw)
+            oval(61,-75,70,-57,fill="#e26445" if angry else "#4b6e85",outline="")
+            oval(64,-73,68,-60,fill="#171827",outline="")
+            oval(65,-72,67,-69,fill="white",outline="")
+            line(47,-81,61,-76,75,-82,fill=dark,width=max(2,int((4 if angry else 2)*s)),smooth=True)
+        # muzzle, nostrils, friendly or determined mouth
+        oval(94,-70,99,-65,fill=dark,outline="")
+        oval(101,-68,105,-64,fill=dark,outline="")
         if fire:
-            poly(100, -50, 68, -46, 76, -32, 98, -40, fill=body, outline=dark, width=lw)
-            poly(104, -52, 70, -49, 78, -40, 98, -44, fill="#7a1020", outline="")
+            poly(102,-54,75,-52,82,-39,102,-43,fill=dark,outline="")
+            line(103,-51,80,-50,fill="#6e2636",width=max(2,int(3*s)))
         else:
-            line(106, -52, 70, -47, fill=dark, width=lw)
+            line(103,-54,90,-50,80,-52,fill=dark,width=max(1,int(2*s)),smooth=True)
+        # cheek freckles
+        for x,y in ((85,-62),(91,-59),(86,-56)):
+            oval(x,y,x+2,y+2,fill=hi,outline="")
 
-        # fire breath
+        # flame ribbons with stable, smooth oscillation
         if fire:
-            length = 40 + random.random() * 20 + (12 if roaring else 0)
-            for col, k in (("#ff5722", 1.0), ("#ffb300", 0.72), ("#fff59d", 0.45)):
-                l, hw, j = length * k, 12 * k, random.uniform(-6, 6)
-                poly(108, -53 - hw, 108 + l * 0.5, -53 - hw * 1.4 + j, 108 + l, -53 + j * 0.5,
-                     108 + l * 0.55, -53 + hw * 1.2, 108, -53 + hw, fill=col, outline="")
+            power=.7+.3*math.sin(t*18)
+            length=(48+28*urgent)*(1.35 if roaring else 1)*power
+            for offset, k, col in ((0,1,"#f05b3f"),(1,.72,"#ffad45"),(2,.43,"#fff0a1")):
+                top=-52-10*k
+                poly(103,top,103+length*.36,top-7*k*math.sin(t*14+offset),
+                     103+length,top+8*k*math.sin(t*11+offset),
+                     103+length*.57,top+12*k,103,top+10*k,
+                     fill=col,outline="")
+            if random.random()<.55:
+                self.particles.append([cx+(108+length)*s,cy-52*s,random.uniform(0,1),random.uniform(-.7,.5)])
+        # ember and smoke particles, bounded to keep redraw inexpensive
+        next_particles=[]
+        for x,y,age,vy in self.particles[-22:]:
+            age+=.055; y-=2.2*s; x+=math.sin(t*7+age*12)*.7*s
+            if age<1:
+                r=(1+3*(1-age))*s
+                ovalp=(x-r,y-r,x+r,y+r)
+                c.create_oval(*ovalp,fill="#ffb653" if age<.55 else "#f07855",outline="")
+                next_particles.append([x,y,age,vy])
+        self.particles=next_particles
 
-        # smoke when annoyed
-        if mood in ("angry", "furious", "overdue"):
-            n = 2 if mood == "angry" else 4
-            for i in range(n):
-                age = (t * 0.7 + i / n) % 1
-                x = 103 + age * 18 + math.sin(age * 6 + i) * 4
-                y = -66 - age * 55
-                r = 3 + age * 9
-                col = hexc(lerp_rgb((70, 70, 70), (170, 170, 170), age))
-                oval(x - r, y - r, x + r, y + r, fill=col, outline="")
+        # alert aura rings pulse with urgency
+        if urgent>.55:
+            pulse=(math.sin(t*4)+1)/2
+            oval(-79-pulse*3,-103-pulse*3,88+pulse*3,66+pulse*3,
+                 fill="",outline=color(mix(rgb,(255,255,255),.65)),width=1)
 
-        # sleeping z's
-        if mood == "sleeping":
-            for i in range(3):
-                age = (t * 0.4 + i / 3) % 1
-                x, y = 95 + age * 25, -95 - age * 45
-                cv.create_text(*p(x, y), text="z", fill=BONE,
-                               font=("Helvetica", int((8 + i * 3) * max(s, 0.7)), "bold"))
+        # compact floating status card
+        text=self.quip if now<self.quip_until else self.label
+        card_w=min(W-24,max(206, min(350, 34+len(text)*6.2)))
+        x1=(W-card_w)/2; y1=12; x2=x1+card_w; y2=54
+        c.create_rectangle(x1+2,y1+3,x2+2,y2+3,fill="#11131f",outline="")
+        c.create_rectangle(x1,y1,x2,y2,fill="#242638",outline=color(mix(rgb,(255,255,255),.15)),width=1)
+        c.create_oval(x1+12,y1+13,x1+26,y1+27,fill=body,outline="")
+        c.create_text(x1+34,(y1+y2)/2,text=text,anchor="w",fill="#f6f1e7",
+                      font=("Segoe UI",10,"bold"))
+        # urgency meter
+        mx1=x1+12; my=y2-5; mx2=x2-12
+        c.create_line(mx1,my,mx2,my,fill="#414356",width=2)
+        c.create_line(mx1,my,mx1+(mx2-mx1)*urgent,my,fill=color(rgb),width=2)
 
-        # label / quip bubble
-        text = self.quip if now < self.quip_until else self.label
-        tid = cv.create_text(W / 2, 22, text=text, fill="white", font=("Helvetica", 10, "bold"))
-        x1, y1, x2, y2 = cv.bbox(tid)
-        box = cv.create_rectangle(x1 - 10, y1 - 5, x2 + 10, y2 + 5, fill=INK, outline=body, width=2)
-        cv.tag_lower(box, tid)
+    def slay(self,rid):
+        self.store.done(rid); self.roar_until=time.time()+1.2; self.refresh()
+        self.say(f"A mighty victory! {self.store.slain()} deadline{'s' if self.store.slain()!=1 else ''} conquered.",4)
 
-    # ---- deadline manager window ----
     def open_manager(self):
-        if self.manager is not None and self.manager.winfo_exists():
-            self.manager.lift()
-            self.manager.focus_force()
-            return
-
-        win = tk.Toplevel(self.root)
-        self.manager = win
-        win.title("Deadline Dragon")
-        win.attributes("-topmost", True)
-        win.resizable(False, False)
-        win.geometry(f"+{max(0, self.root.winfo_x() - 480)}+{max(0, self.root.winfo_y() - 60)}")
-        win.bind("<Escape>", lambda e: win.destroy())
-
-        frm = ttk.Frame(win, padding=12)
-        frm.grid()
-
-        title_var, due_var = tk.StringVar(), tk.StringVar()
-        ttk.Label(frm, text="What's due?").grid(row=0, column=0, sticky="w")
-        ttk.Label(frm, text="When? (YYYY-MM-DD or days)").grid(row=0, column=1, sticky="w", padx=(8, 0))
-        title_e = ttk.Entry(frm, textvariable=title_var, width=26)
-        title_e.grid(row=1, column=0)
-        due_e = ttk.Entry(frm, textvariable=due_var, width=22)
-        due_e.grid(row=1, column=1, padx=(8, 0))
-
-        tree = ttk.Treeview(frm, columns=("title", "due", "left"), show="headings", height=8)
-        for col, text, width in (("title", "Deadline", 200), ("due", "Due", 90), ("left", "Time left", 110)):
-            tree.heading(col, text=text)
-            tree.column(col, width=width, anchor="w")
-        tree.grid(row=2, column=0, columnspan=3, pady=(10, 6), sticky="ew")
-        tree.tag_configure("late", foreground="#c62828")
-
-        status = ttk.Label(frm, text="")
-        status.grid(row=3, column=0, sticky="w")
-
+        if getattr(self,"manager",None) is not None and self.manager.winfo_exists():
+            self.manager.lift(); self.manager.focus_force(); return
+        win=tk.Toplevel(self.root); self.manager=win
+        win.title("Deadline Dragon · Lair ledger"); win.attributes("-topmost",True)
+        win.resizable(False,False); win.geometry(f"+{max(0,self.root.winfo_x()-470)}+{max(0,self.root.winfo_y()-80)}")
+        win.bind("<Escape>",lambda _e:win.destroy())
+        frm=ttk.Frame(win,padding=16); frm.grid()
+        ttk.Label(frm,text="Your quests",font=("Segoe UI",14,"bold")).grid(row=0,column=0,columnspan=3,sticky="w",pady=(0,10))
+        title_v,due_v=tk.StringVar(),tk.StringVar()
+        ttk.Label(frm,text="Deadline").grid(row=1,column=0,sticky="w")
+        ttk.Label(frm,text="Due date · YYYY-MM-DD or days").grid(row=1,column=1,sticky="w",padx=(8,0))
+        title_e=ttk.Entry(frm,textvariable=title_v,width=26); title_e.grid(row=2,column=0)
+        due_e=ttk.Entry(frm,textvariable=due_v,width=24); due_e.grid(row=2,column=1,padx=(8,0))
+        tree=ttk.Treeview(frm,columns=("title","due","left"),show="headings",height=9)
+        for col,label,width in (("title","Quest",210),("due","Due",100),("left","Time left",115)):
+            tree.heading(col,text=label); tree.column(col,width=width,anchor="w")
+        tree.grid(row=3,column=0,columnspan=3,pady=(12,7),sticky="ew")
+        tree.tag_configure("late",foreground="#bf3d45")
+        status=ttk.Label(frm,text=""); status.grid(row=4,column=0,sticky="w")
         def reload():
             tree.delete(*tree.get_children())
-            for rid, title, due in self.store.pending():
-                d = days_left(due)
-                tree.insert("", "end", iid=str(rid),
-                            values=(title, due, when_text(d)), tags=("late",) if d < 0 else ())
-            status.config(text=f"Slain so far: {self.store.slain()}")
-
+            for rid,title,due in self.store.pending():
+                d=days_left(due)
+                tree.insert("","end",iid=str(rid),values=(title,due,when_text(d)),tags=("late",) if d<0 else ())
+            status.config(text=f"Victories: {self.store.slain()}")
         def selected():
-            sel = tree.selection()
-            return int(sel[0]) if sel else None
-
-        def add(_event=None):
-            title = title_var.get().strip()
+            sel=tree.selection(); return int(sel[0]) if sel else None
+        def add(_e=None):
+            title=title_v.get().strip()
             if not title:
-                messagebox.showwarning("Deadline Dragon", "Give the deadline a name.", parent=win)
-                return
-            try:
-                due = parse_due(due_var.get())
+                messagebox.showwarning("Deadline Dragon","Give this quest a name.",parent=win); return
+            try: due=parse_due(due_v.get())
             except ValueError as err:
-                messagebox.showwarning("Deadline Dragon", str(err), parent=win)
-                return
-            self.store.add(title, due.isoformat())
-            title_var.set("")
-            due_var.set("")
-            title_e.focus_set()
-            reload()
-            self.refresh()
-            self.say("Fresh meat. I'll be watching.")
-
+                messagebox.showwarning("Deadline Dragon",str(err),parent=win); return
+            self.store.add(title,due.isoformat()); title_v.set(""); due_v.set("")
+            reload(); self.refresh(); self.say("Quest accepted. I'll keep watch."); title_e.focus_set()
         def slay():
-            rid = selected()
-            if rid is not None:
-                self.slay(rid)
-                reload()
-
+            rid=selected()
+            if rid is not None: self.slay(rid); reload()
         def remove():
-            rid = selected()
-            if rid is not None:
-                self.store.delete(rid)
-                reload()
-                self.refresh()
-
-        ttk.Button(frm, text="Add", width=8, command=add).grid(row=1, column=2, padx=(8, 0))
-        btns = ttk.Frame(frm)
-        btns.grid(row=3, column=1, columnspan=2, sticky="e")
-        ttk.Button(btns, text="Slay (done)", command=slay).pack(side="left", padx=(0, 6))
-        ttk.Button(btns, text="Delete", command=remove).pack(side="left")
-
-        title_e.bind("<Return>", add)
-        due_e.bind("<Return>", add)
-        reload()
-        title_e.focus_set()
+            rid=selected()
+            if rid is not None: self.store.delete(rid); reload(); self.refresh()
+        ttk.Button(frm,text="Add quest",command=add).grid(row=2,column=2,padx=(8,0))
+        buttons=ttk.Frame(frm); buttons.grid(row=4,column=1,columnspan=2,sticky="e")
+        ttk.Button(buttons,text="Mark conquered",command=slay).pack(side="left",padx=(0,6))
+        ttk.Button(buttons,text="Delete",command=remove).pack(side="left")
+        title_e.bind("<Return>",add); due_e.bind("<Return>",add)
+        reload(); title_e.focus_set()
 
 
 def main():
-    root = tk.Tk()
-    DragonApp(root)
-    root.mainloop()
+    root=tk.Tk(); DragonApp(root); root.mainloop()
 
 
 if __name__ == "__main__":
