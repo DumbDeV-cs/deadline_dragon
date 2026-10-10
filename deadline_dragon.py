@@ -2,15 +2,17 @@
 
 Run with: python deadline_dragon.py
 Drag the dragon to move it, left-click to poke, right-click for the menu.
-Dates accept YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY, or a number of days.
+Deadlines accept a date, YYYY-MM-DD HH:MM:SS, YYYY-MM, or days from today.
+The quest board also has a month calendar and date/time spinner controls.
 """
 
+import calendar
 import math
 import sqlite3
 import sys
 import time
 import tkinter as tk
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as clock_time, timedelta
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -40,23 +42,65 @@ def shade(rgb, amount):
 def parse_due(value):
     value = value.strip()
     if value.isdigit():
-        return date.today() + timedelta(days=int(value))
+        day = date.today() + timedelta(days=int(value))
+        return datetime.combine(day, clock_time(23, 59, 59))
+    if len(value) == 7 and value[4] == "-":
+        try:
+            year, month = map(int, value.split("-"))
+            day = calendar.monthrange(year, month)[1]
+            return datetime(year, month, day, 23, 59, 59)
+        except (ValueError, OverflowError):
+            pass
+    try:
+        parsed = datetime.fromisoformat(value)
+        if "T" not in value and " " not in value:
+            parsed = parsed.replace(hour=23, minute=59, second=59)
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        return parsed
+    except ValueError:
+        pass
     for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
         try:
-            return datetime.strptime(value, fmt).date()
+            parsed = datetime.strptime(value, fmt)
+            return parsed.replace(hour=23, minute=59, second=59)
         except ValueError:
             pass
-    raise ValueError("Use YYYY-MM-DD, DD-MM-YYYY, or a number of days from today.")
+    raise ValueError("Choose a date, enter YYYY-MM-DD or YYYY-MM-DD HH:MM:SS, or enter days from today.")
 
 
-def days_left(due):
-    return (date.fromisoformat(due) - date.today()).days
+def due_datetime(value):
+    parsed = datetime.fromisoformat(value)
+    if "T" not in value and " " not in value:
+        parsed = parsed.replace(hour=23, minute=59, second=59)
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
 
 
-def when_text(days):
-    if days < 0:
-        return f"{abs(days)}d overdue"
-    return ("today!" if days == 0 else "tomorrow" if days == 1 else f"in {days} days")
+def seconds_left(due, now=None):
+    return (due_datetime(due) - (now or datetime.now())).total_seconds()
+
+
+def when_text(seconds):
+    late = seconds < 0
+    total = int(abs(seconds))
+    days, total = divmod(total, 86400)
+    hours, total = divmod(total, 3600)
+    minutes, secs = divmod(total, 60)
+    if days:
+        value = f"{days}d {hours}h"
+    elif hours:
+        value = f"{hours}h {minutes}m"
+    elif minutes:
+        value = f"{minutes}m {secs}s"
+    else:
+        value = f"{secs}s"
+    return f"overdue {value}" if late else f"in {value}"
+
+
+def due_display(value):
+    return due_datetime(value).strftime("%d %b %Y · %I:%M:%S %p")
 
 
 class Store:
@@ -194,12 +238,14 @@ class DragonApp:
             self.mood, self.urgency = "sleeping", 0
             self.label, self.target_rgb = "No deadlines yet · right-click to add one", (83, 190, 145)
         else:
+            rows.sort(key=lambda row: due_datetime(row[2]))
             _rid, title, due = rows[0]
-            d = days_left(due)
-            self.urgency = 1 if d < 0 else clamp(1-d/21, 0, 1)
-            self.mood = ("overdue" if d < 0 else "furious" if d <= 2 else "angry" if d <= 6
-                         else "alert" if d <= 13 else "calm")
-            self.label = f"{title[:27]}{'…' if len(title)>27 else ''}  ·  {when_text(d)}"
+            remaining = seconds_left(due)
+            days = remaining / 86400
+            self.urgency = 1 if remaining < 0 else clamp(1-days/21, 0, 1)
+            self.mood = ("overdue" if remaining < 0 else "furious" if days <= 2 else "angry" if days <= 6
+                         else "alert" if days <= 13 else "calm")
+            self.label = f"{title[:27]}{'…' if len(title)>27 else ''}  ·  {when_text(remaining)}"
             stops = [(0,(65,188,139)),(.42,(234,196,72)),(.72,(255,137,65)),(1,(247,83,86))]
             for (u0,c0),(u1,c1) in zip(stops,stops[1:]):
                 if self.urgency <= u1:
@@ -215,7 +261,7 @@ class DragonApp:
                       "furious":"Two days. We can do this.","overdue":"Okay. No panic. Let's tackle it."}[self.mood])
 
     def refresh_loop(self):
-        self.refresh(); self.root.after(30000, self.refresh_loop)
+        self.refresh(); self.root.after(1000, self.refresh_loop)
 
     def tick(self):
         now = time.time()
@@ -241,8 +287,9 @@ class DragonApp:
         urgent = self.urgency
         angry = self.mood in ("angry", "furious", "overdue")
         fire = now < self.roar_until or rage > .78
-        blue = color(mix((12, 166, 229), (17, 128, 208), urgent * .22))
-        light_blue = color(mix((90, 222, 246), (92, 184, 234), urgent * .2))
+        heat = clamp((urgent - .5) / .5, 0, 1) ** .72
+        blue = color(mix((12, 166, 229), (220, 55, 70), heat))
+        light_blue = color(mix((90, 222, 246), (255, 158, 165), heat))
         bone_blue = "#147eae"
         ink = "#08283d"
         belly = "#ff973e"
@@ -507,19 +554,26 @@ class DragonApp:
         # Deadline rage eases into stronger wingbeats, a hotter gaze and fire.
         flame_length=0
         if fire:
-            flame_length=58+34*rage
+            flame_length=46+25*rage
             flick=math.sin(t*(13+rage*9))
-            poly(28,-77,49,-91-flick*3,28+flame_length,-74+flick*5,
-                 53,-59,28,-67,fill="#df3c3b",outline=ink,
-                 width=max(1,round(1.7*s)),smooth=True,splinesteps=16)
-            poly(29,-75,49,-84-flick*2,29+flame_length*.75,-73+flick*3,
-                 51,-64,29,-69,fill="#ff982e",outline="",smooth=True)
-            poly(29,-73,45,-79,29+flame_length*.48,-72,48,-68,29,-70,
-                 fill="#fff3ae",outline="",smooth=True)
+            spread=1+flick*.07
+            far=-77+flame_length
+            # Frontal breath projects toward the viewer and widens in depth.
+            poly(0,-77,-7,-82,-9,-69,-17*spread,-56,
+                 -22*spread,-40,-16*spread,far-8,0,far+5,
+                 16*spread,far-8,22*spread,-40,17*spread,-56,
+                 9,-69,7,-82,fill="#d93643",outline=ink,
+                 width=max(1,round(1.4*s)),smooth=True,splinesteps=18)
+            poly(0,-75,-5,-69,-12,-54,-13,-43,
+                 0,-77+flame_length*.76,13,-43,12,-54,5,-69,
+                 fill="#ff982e",outline="",smooth=True,splinesteps=16)
+            poly(0,-72,-4,-65,-7,-54,0,-77+flame_length*.48,
+                 7,-54,4,-65,fill="#fff3ae",outline="",
+                 smooth=True,splinesteps=14)
 
         next_particles=[]
         for x,y,age,velocity in self.particles[-16:]:
-            age+=.045; y-=velocity*s
+            age+=.045; y+=velocity*s
             x+=math.sin(t*5+age*9)*.45*s
             if age<1:
                 r=max(1,(1-age)*3*s)
@@ -528,7 +582,7 @@ class DragonApp:
                 next_particles.append([x,y,age,velocity])
         self.particles=next_particles
         if fire and now>=self.next_ember_at and len(self.particles)<16:
-            ex,ey=p(28+flame_length,-73)
+            ex,ey=p(0,-77+flame_length)
             self.particles.append([ex,ey,0,1.2+rage*.6])
             self.next_ember_at=now+.12
 
@@ -578,20 +632,120 @@ class DragonApp:
         ttk.Label(frm,text="Small steps tame big deadlines.",style="Muted.TLabel").grid(row=1,column=0,columnspan=3,sticky="w",pady=(2,16))
         title_v,due_v=tk.StringVar(),tk.StringVar()
         ttk.Label(frm,text="QUEST NAME",style="Muted.TLabel").grid(row=2,column=0,sticky="w")
-        ttk.Label(frm,text="DUE DATE  ·  YYYY-MM-DD OR DAYS",style="Muted.TLabel").grid(row=2,column=1,sticky="w",padx=(8,0))
+        ttk.Label(frm,text="DUE DATE & TIME",style="Muted.TLabel").grid(row=2,column=1,sticky="w",padx=(8,0))
         title_e=ttk.Entry(frm,textvariable=title_v,width=28); title_e.grid(row=3,column=0,sticky="ew",pady=(5,0))
         due_e=ttk.Entry(frm,textvariable=due_v,width=24); due_e.grid(row=3,column=1,padx=(8,0),sticky="ew",pady=(5,0))
+
+        def open_picker():
+            try:
+                initial=parse_due(due_v.get()) if due_v.get().strip() else datetime.now()+timedelta(days=1)
+            except ValueError:
+                initial=datetime.now()+timedelta(days=1)
+            picker=tk.Toplevel(win); picker.title("Choose date and time")
+            picker.configure(bg="#111827"); picker.resizable(False,False)
+            picker.transient(win); picker.attributes("-topmost",True)
+            picker.bind("<Escape>",lambda _e:picker.destroy())
+            year_v=tk.StringVar(value=str(initial.year)); month_v=tk.StringVar(value=str(initial.month))
+            day_v=tk.StringVar(value=str(initial.day)); hour_v=tk.StringVar(value=f"{initial.hour:02d}")
+            minute_v=tk.StringVar(value=f"{initial.minute:02d}"); second_v=tk.StringVar(value=f"{initial.second:02d}")
+            box=ttk.Frame(picker,padding=18,style="Lair.TFrame"); box.grid()
+            ttk.Label(box,text="CHOOSE YOUR DEADLINE",style="Title.TLabel").grid(row=0,column=0,columnspan=7,sticky="w",pady=(0,12))
+            nav=ttk.Frame(box,style="Lair.TFrame"); nav.grid(row=1,column=0,columnspan=7,sticky="ew",pady=(0,6))
+            month_label=ttk.Label(nav,text="",style="Lair.TLabel",font=("Segoe UI",12,"bold"))
+            month_label.pack(side="left",expand=True)
+            refreshing=[False]
+            day_buttons=[]
+
+            def refresh_calendar(*_args):
+                if refreshing[0]: return
+                try: year,month=int(year_v.get()),int(month_v.get())
+                except ValueError: return
+                if not 1<=month<=12 or not 1<=year<=9999: return
+                refreshing[0]=True
+                last_day=calendar.monthrange(year,month)[1]
+                try: selected=clamp(int(day_v.get()),1,last_day)
+                except ValueError: selected=1
+                day_v.set(str(selected)); month_label.config(text=f"{calendar.month_name[month]}  {year}")
+                weeks=calendar.Calendar(firstweekday=6).monthdayscalendar(year,month)
+                weeks += [[0]*7 for _ in range(6-len(weeks))]
+                for index,button in enumerate(day_buttons):
+                    value=weeks[index//7][index%7]
+                    button.configure(text=str(value) if value else "",
+                                      state=tk.NORMAL if value else tk.DISABLED,
+                                      style="Accent.TButton" if value==selected else "Quiet.TButton",
+                                      command=(lambda d=value:select_day(d)) if value else (lambda:None))
+                refreshing[0]=False
+
+            def select_day(value):
+                if value:
+                    day_v.set(str(value)); refresh_calendar()
+
+            def shift_month(delta):
+                year,month=int(year_v.get()),int(month_v.get())
+                month+=delta
+                if month<1: year-=1; month=12
+                elif month>12: year+=1; month=1
+                year_v.set(str(clamp(year,1,9999))); month_v.set(str(month))
+                refresh_calendar()
+
+            ttk.Button(nav,text="‹",width=3,style="Quiet.TButton",command=lambda:shift_month(-1)).pack(side="left")
+            ttk.Button(nav,text="›",width=3,style="Quiet.TButton",command=lambda:shift_month(1)).pack(side="right")
+            for col,name in enumerate(("S","M","T","W","T","F","S")):
+                ttk.Label(box,text=name,style="Muted.TLabel",anchor="center",width=4).grid(row=2,column=col,pady=(3,4))
+            for row in range(6):
+                for col in range(7):
+                    button=ttk.Button(box,text="",width=4,style="Quiet.TButton")
+                    button.grid(row=3+row,column=col,padx=1,pady=1,ipady=2)
+                    day_buttons.append(button)
+            spinrow=ttk.Frame(box,style="Lair.TFrame"); spinrow.grid(row=9,column=0,columnspan=7,sticky="ew",pady=(14,0))
+            fields=(("MONTH",month_v,1,12,5),("DAY",day_v,1,31,4),("YEAR",year_v,1,9999,7),
+                    ("HOUR",hour_v,0,23,4),("MIN",minute_v,0,59,4),("SEC",second_v,0,59,4))
+            for col,(label,var,low,high,width) in enumerate(fields):
+                group=ttk.Frame(spinrow,style="Lair.TFrame"); group.grid(row=0,column=col,padx=(0,6))
+                ttk.Label(group,text=label,style="Muted.TLabel").pack(anchor="w")
+                ttk.Spinbox(group,from_=low,to=high,wrap=True,width=width,textvariable=var,
+                            command=refresh_calendar).pack(anchor="w",pady=(3,0))
+            month_v.trace_add("write",refresh_calendar); year_v.trace_add("write",refresh_calendar)
+            day_v.trace_add("write",refresh_calendar)
+            actions=ttk.Frame(box,style="Lair.TFrame"); actions.grid(row=10,column=0,columnspan=7,sticky="e",pady=(16,0))
+
+            def use_date():
+                try:
+                    selected=datetime(int(year_v.get()),int(month_v.get()),int(day_v.get()),
+                                      int(hour_v.get()),int(minute_v.get()),int(second_v.get()))
+                except ValueError:
+                    messagebox.showwarning("Deadline Dragon","Choose a valid date and time.",parent=picker); return
+                due_v.set(selected.isoformat(sep=" ",timespec="seconds")); picker.destroy()
+
+            ttk.Button(actions,text="Cancel",style="Quiet.TButton",command=picker.destroy).pack(side="left",padx=(0,7))
+            ttk.Button(actions,text="Use this date",style="Accent.TButton",command=use_date).pack(side="left")
+            refresh_calendar(); picker.geometry(f"+{max(0,win.winfo_x()+80)}+{max(0,win.winfo_y()+60)}")
+
         tree=ttk.Treeview(frm,columns=("title","due","left"),show="headings",height=8,style="Lair.Treeview",selectmode="browse")
-        for col,label,width in (("title","QUEST",230),("due","DUE",105),("left","TIME LEFT",120)):
+        for col,label,width in (("title","QUEST",210),("due","DUE DATE · TIME",190),("left","TIME LEFT",125)):
             tree.heading(col,text=label); tree.column(col,width=width,anchor="w")
-        tree.grid(row=4,column=0,columnspan=3,pady=(16,12),sticky="ew")
+        tree.grid(row=5,column=0,columnspan=3,pady=(14,12),sticky="ew")
         tree.tag_configure("late",foreground="#ff8c91")
-        status=ttk.Label(frm,text="",style="Muted.TLabel"); status.grid(row=5,column=0,sticky="w")
+        status=ttk.Label(frm,text="",style="Muted.TLabel"); status.grid(row=6,column=0,sticky="w")
+        due_values={}
+
+        def update_countdowns():
+            if not win.winfo_exists(): return
+            for rid,due in due_values.items():
+                remaining=seconds_left(due)
+                tree.set(str(rid),"left",when_text(remaining))
+                tree.item(str(rid),tags=("late",) if remaining<0 else ())
+            win.after(1000,update_countdowns)
+
         def reload():
             tree.delete(*tree.get_children())
-            for rid,title,due in self.store.pending():
-                d=days_left(due)
-                tree.insert("","end",iid=str(rid),values=(title,due,when_text(d)),tags=("late",) if d<0 else ())
+            due_values.clear()
+            rows=self.store.pending()
+            rows.sort(key=lambda row: due_datetime(row[2]))
+            for rid,title,due in rows:
+                remaining=seconds_left(due)
+                due_values[rid]=due
+                tree.insert("","end",iid=str(rid),values=(title,due_display(due),when_text(remaining)),tags=("late",) if remaining<0 else ())
             status.config(text=f"Victories: {self.store.slain()}")
         def selected():
             sel=tree.selection(); return int(sel[0]) if sel else None
@@ -602,7 +756,7 @@ class DragonApp:
             try: due=parse_due(due_v.get())
             except ValueError as err:
                 messagebox.showwarning("Deadline Dragon",str(err),parent=win); return
-            self.store.add(title,due.isoformat()); title_v.set(""); due_v.set("")
+            self.store.add(title,due.isoformat(sep=" ",timespec="seconds")); title_v.set(""); due_v.set("")
             reload(); self.refresh(); self.say("Quest accepted. I'll keep watch."); title_e.focus_set()
         def slay():
             rid=selected()
@@ -610,12 +764,13 @@ class DragonApp:
         def remove():
             rid=selected()
             if rid is not None: self.store.delete(rid); reload(); self.refresh()
+        ttk.Button(frm,text="📅  Pick date & time",command=open_picker,style="Quiet.TButton").grid(row=4,column=0,columnspan=3,sticky="w",pady=(8,0))
         ttk.Button(frm,text="＋  Add quest",command=add,style="Accent.TButton").grid(row=3,column=2,padx=(10,0),pady=(5,0),sticky="ew")
-        buttons=ttk.Frame(frm,style="Lair.TFrame"); buttons.grid(row=5,column=1,columnspan=2,sticky="e")
+        buttons=ttk.Frame(frm,style="Lair.TFrame"); buttons.grid(row=6,column=1,columnspan=2,sticky="e")
         ttk.Button(buttons,text="✓  Mark conquered",command=slay,style="Accent.TButton").pack(side="left",padx=(0,7))
         ttk.Button(buttons,text="Delete",command=remove,style="Quiet.TButton").pack(side="left")
         title_e.bind("<Return>",add); due_e.bind("<Return>",add)
-        reload(); title_e.focus_set()
+        reload(); title_e.focus_set(); update_countdowns()
 
 
 def main():
