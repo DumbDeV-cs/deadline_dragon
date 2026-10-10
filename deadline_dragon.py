@@ -97,6 +97,13 @@ class DragonApp:
         self.rgb = (83, 190, 145)
         self.target_rgb = self.rgb
         self.started = time.time()
+        self.last_tick = self.started
+        self.rage = 0.0
+        self.target_rage = 0.0
+        self.gaze_x = 0.0
+        self.gaze_y = 0.0
+        self.gaze_target_x = 0.0
+        self.gaze_target_y = 0.0
         self.roar_until = 0
         self.quip, self.quip_until = "", 0
         self.particles = []
@@ -139,6 +146,8 @@ class DragonApp:
         self.menu.add_command(label="Quit", command=self.root.destroy)
         for seq in ("<Button-3>", "<Button-2>", "<Control-Button-1>"):
             c.bind(seq, self.popup)
+        c.bind("<Motion>", self.track_cursor)
+        c.bind("<Leave>", self.reset_gaze)
         self.root.bind("<Escape>", lambda _e: self.root.destroy())
         self.root.bind("<space>", lambda _e: self.poke())
 
@@ -159,6 +168,14 @@ class DragonApp:
 
     def release(self, _e):
         if not self.moved: self.poke()
+
+    def track_cursor(self, event):
+        self.gaze_target_x = clamp((event.x - 190) / 54, -1, 1) * 5.0
+        self.gaze_target_y = clamp((event.y - 132) / 42, -1, 1) * 3.5
+
+    def reset_gaze(self, _event=None):
+        self.gaze_target_x = 0.0
+        self.gaze_target_y = 0.0
 
     def say(self, text, seconds=3.5):
         self.quip, self.quip_until = text, time.time()+seconds
@@ -189,6 +206,9 @@ class DragonApp:
                     self.target_rgb = mix(c0,c1,(self.urgency-u0)/(u1-u0)); break
             else: self.target_rgb = stops[-1][1]
         self.target_scale = .82 + .27*self.urgency
+        self.target_rage = {"sleeping": 0.0, "calm": .04, "alert": .18,
+                            "angry": .48, "furious": .84,
+                            "overdue": 1.0}[self.mood]
         if old != self.mood and time.time() > self.quip_until:
             self.say({"sleeping":"I'm all ears. And horns.","calm":"Plenty of time. Make it count.",
                       "alert":"The clock is starting to breathe fire.","angry":"This one is getting close!",
@@ -198,40 +218,50 @@ class DragonApp:
         self.refresh(); self.root.after(30000, self.refresh_loop)
 
     def tick(self):
-        self.scale += (self.target_scale-self.scale)*.07
-        self.rgb = mix(self.rgb,self.target_rgb,.07)
+        now = time.time()
+        dt = clamp(now - self.last_tick, 0.0, .1)
+        self.last_tick = now
+        ease = 1 - math.exp(-11 * dt)
+        self.scale += (self.target_scale - self.scale) * ease
+        self.rgb = mix(self.rgb, self.target_rgb, ease)
+        rage_goal = 1.0 if now < self.roar_until else self.target_rage
+        self.rage += (rage_goal - self.rage) * (1 - math.exp(-8 * dt))
+        gaze_ease = 1 - math.exp(-15 * dt)
+        self.gaze_x += (self.gaze_target_x - self.gaze_x) * gaze_ease
+        self.gaze_y += (self.gaze_target_y - self.gaze_y) * gaze_ease
         self.draw()
         self.root.after(33, self.tick)
-
     def draw(self):
         c = self.canvas
         c.delete("all")
         now = time.time()
         t = now - self.started
         s = self.scale
+        rage = self.rage
         urgent = self.urgency
         angry = self.mood in ("angry", "furious", "overdue")
-        fire = now < self.roar_until or self.mood in ("furious", "overdue")
-        # Keep the mascot's signature blue; urgency changes the HUD and effects.
-        blue = color(mix((14, 164, 224), (19, 121, 207), urgent * .28))
-        blue_light = color(mix((81, 216, 242), (80, 173, 236), urgent * .2))
-        blue_dark = "#0874ae"
-        outline = "#09283d"
-        orange = "#ff963f"
-        orange_light = "#ffc06a"
-        red = "#e54a45"
-        bob = math.sin(t * 2.2) * 2.5
-        cx, cy = 190, 242 + bob
-        line_w = max(2, round(3.2 * s))
+        fire = now < self.roar_until or rage > .78
+        blue = color(mix((12, 166, 229), (17, 128, 208), urgent * .22))
+        light_blue = color(mix((90, 222, 246), (92, 184, 234), urgent * .2))
+        bone_blue = "#147eae"
+        ink = "#08283d"
+        belly = "#ff973e"
+        belly_hi = "#ffd080"
+        belly_shadow = "#bd573e"
+        red = "#d93648"
+        lw = max(2, round(3.1 * s))
+        breath = math.sin(t * 2.15) * 2.5
+        shake = math.sin(t * 31) * rage * 1.05
+        cx, cy = 190 + shake, 242 + breath + math.sin(t * 27) * rage * .5
 
         def p(x, y):
             return cx + x * s, cy + y * s
 
         def coords(values):
-            result = []
+            out = []
             for i in range(0, len(values), 2):
-                result.extend(p(values[i], values[i + 1]))
-            return result
+                out.extend(p(values[i], values[i + 1]))
+            return out
 
         def oval(x1, y1, x2, y2, **kw):
             c.create_oval(*p(x1, y1), *p(x2, y2), **kw)
@@ -242,251 +272,289 @@ class DragonApp:
         def line(*xy, **kw):
             c.create_line(*coords(xy), **kw)
 
-        def wing(side, flap):
-            # Broad bat wing, mirrored on each side and hinged at the shoulder.
-            points = [(0, 0), (9, -22), (37, -65), (70, -88),
-                      (66, -55), (108, -66), (86, -39), (124, -32),
-                      (91, -13), (64, -20), (38, -16), (20, 5)]
-            angle = math.radians(side * flap)
-            co, si = math.cos(angle), math.sin(angle)
-            transformed = []
+        def mirrored_poly(side, points, **kw):
+            values = []
             for x, y in points:
-                x *= side
-                transformed.extend((side * 31 + x * co - y * si,
-                                    -47 + x * si + y * co))
-            c.create_polygon(*coords(transformed), fill="#d94249", outline=outline,
-                             width=line_w, smooth=True, splinesteps=20,
-                             joinstyle=tk.ROUND)
-            # Colored membrane panels and ribs give the wings real structure.
-            panels = ((side * 36, -49, side * 97, -112,
-                       side * 76, -69, side * 39, -38),
-                      (side * 42, -47, side * 126, -79,
-                       side * 88, -51, side * 45, -32),
-                      (side * 44, -43, side * 121, -43,
-                       side * 89, -31, side * 53, -27))
-            for panel in panels:
-                poly(*panel, fill="#f05b52", outline="")
-            for x, y in ((side * 96, -108), (side * 119, -75),
-                         (side * 116, -42), (side * 90, -31)):
-                line(side * 33, -45, x, y, fill="#09283d",
-                     width=max(1, round(1.7 * s)), capstyle=tk.ROUND,
-                     smooth=True)
-            line(side * 37, -48, side * 64, -81, side * 94, -101,
-                 fill="#ff9b72", width=max(1, round(1.5 * s)),
-                 capstyle=tk.ROUND, smooth=True)
+                values.extend((side * x, y))
+            c.create_polygon(*coords(values), **kw)
 
-        # Ground shadow and a gentle aura only when the dragon is worked up.
-        oval(-70, 75, 70, 84, fill="#27374a", outline="")
-        flap = math.sin(t * (2.8 + urgent * 1.2)) * (7 + 4 * urgent)
-        wing(-1, flap)
-        wing(1, flap)
+        def wing_point(side, x, y, angle):
+            a = math.radians(angle)
+            co, si = math.cos(a), math.sin(a)
+            xr, yr = x * co - y * si, x * si + y * co
+            return side * (31 + xr), -49 + yr
 
-        # Long curling tail with a row of red dorsal spikes.
-        sway = math.sin(t * 1.7) * 7
-        line(-34, 32, -61, 49, -90, 43 + sway * .45,
-             -117, 54 + sway, -141, 42 + sway,
-             fill=outline, width=max(7, round(22 * s)), smooth=True,
-             capstyle=tk.ROUND, joinstyle=tk.ROUND)
-        line(-34, 32, -61, 49, -90, 43 + sway * .45,
-             -117, 54 + sway, -141, 42 + sway,
-             fill=blue, width=max(4, round(16 * s)), smooth=True,
-             capstyle=tk.ROUND, joinstyle=tk.ROUND)
-        for x, y in ((-57, 43), (-78, 42 + sway * .3),
-                     (-99, 48 + sway * .6), (-119, 49 + sway)):
-            poly(x - 7, y + 2, x, y - 12, x + 8, y + 4,
-                 fill=red, outline=outline, width=max(1, round(1.5 * s)))
-        poly(-139, 42 + sway, -154, 32 + sway, -165, 35 + sway,
-             -160, 46 + sway, -166, 56 + sway, -150, 53 + sway,
-             -139, 61 + sway, -132, 50 + sway,
-             fill=blue, outline=outline, width=line_w, smooth=True,
-             splinesteps=16)
+        def wing_shape(side, points, angle, **kw):
+            values = []
+            for x, y in points:
+                wx, wy = wing_point(side, x, y, angle)
+                values.extend((wx, wy))
+            c.create_polygon(*coords(values), **kw)
 
-        # Back spikes silhouette, then short sturdy legs and clawed feet.
-        poly(-43, -31, -54, -49, -37, -47, -30, -68,
-             -16, -52, 0, -70, 12, -49, 29, -64, 35, -36,
-             fill=red, outline=outline, width=line_w,
-             smooth=True, splinesteps=16)
-        step = math.sin(t * 2.2) * 2
-        for x, lift in ((-31, max(0, step)), (16, max(0, -step))):
-            line(x, 34, x - 3, 64 - lift, fill=outline,
-                 width=max(8, round(23 * s)), capstyle=tk.ROUND, smooth=True)
-            line(x, 34, x - 3, 63 - lift, fill=blue,
-                 width=max(5, round(17 * s)), capstyle=tk.ROUND, smooth=True)
-            oval(x - 17, 56 - lift, x + 17, 78 - lift,
-                 fill=blue, outline=outline, width=line_w)
-            for toe in (-12, -2, 8):
-                oval(x + toe, 65 - lift, x + toe + 12, 77 - lift,
-                     fill=blue_light, outline=outline,
-                     width=max(1, round(1.5 * s)))
-                poly(x + toe + 3, 73 - lift, x + toe + 7, 81 - lift,
-                     x + toe + 11, 73 - lift,
-                     fill="#f5f1dd", outline=outline,
-                     width=max(1, round(1.2 * s)))
+        def wing_bone(side, points, angle, width=5):
+            values = []
+            for x, y in points:
+                wx, wy = wing_point(side, x, y, angle)
+                values.extend((wx, wy))
+            # One clean dark edge and one blue fill keep the supports readable.
+            c.create_line(*coords(values), fill=ink, width=max(3, round((width+2)*s)),
+                          capstyle=tk.ROUND, joinstyle=tk.ROUND, smooth=True)
+            c.create_line(*coords(values), fill=bone_blue, width=max(2, round(width*s)),
+                          capstyle=tk.ROUND, joinstyle=tk.ROUND, smooth=True)
 
-        # Upright body, with the reference's bold orange plated belly.
-        oval(-47, -58, 47, 55, fill=blue, outline=outline, width=line_w)
-        poly(-24, -79, -32, -54, -30, -16, -25, 26,
-             -16, 48, 16, 48, 25, 26, 30, -16, 32, -54, 24, -79,
-             fill=orange, outline=outline, width=max(2, round(2.4 * s)),
-             smooth=True, splinesteps=18)
-        for y in (-57, -38, -18, 3, 24):
-            line(-27, y, -14, y + 4, 0, y + 5, 14, y + 4, 27, y,
-                 fill="#a84939", width=max(1, round(1.7 * s)),
-                 smooth=True, capstyle=tk.ROUND)
-            line(-18, y - 2, 0, y, 18, y - 2,
-                 fill=orange_light, width=max(1, round(1.1 * s)),
-                 smooth=True)
+        # Small contact shadow grounds the upright pose.
+        oval(-69, 75, 69, 85, fill="#253548", outline="")
 
-        # Arms curve down from the shoulders; hands open into three claws.
+        # Paired bat wings: red skin panels stretched over a blue finger-bone frame.
+        wingbeat = math.sin(t * (2.1 + rage * 4.2)) * (3 + rage * 6)
+        wing_outline = [(0, 4), (9, -20), (27, -43), (53, -63),
+                        (83, -80), (112, -78), (117, -57),
+                        (99, -58), (82, -36), (66, -40),
+                        (48, -17), (31, -22), (18, 2)]
         for side in (-1, 1):
-            arm = (side * 36, -43, side * 49, -20, side * 56, 3,
-                   side * 50, 20)
-            line(*arm, fill=outline, width=max(8, round(21 * s)),
-                 capstyle=tk.ROUND, joinstyle=tk.ROUND, smooth=True)
-            line(*arm, fill=blue, width=max(5, round(15 * s)),
-                 capstyle=tk.ROUND, joinstyle=tk.ROUND, smooth=True)
-            oval(side * 43 - 8, 10, side * 43 + 11, 30,
-                 fill=blue, outline=outline, width=line_w)
+            # One continuous membrane with scalloped edges; supports stay sparse.
+            wing_shape(side, [(x+2,y+3) for x,y in wing_outline], wingbeat,
+                       fill="#10263a", outline="")
+            wing_shape(side, wing_outline, wingbeat, fill="#bd3048",
+                       outline=ink, width=lw, smooth=True, splinesteps=20,
+                       joinstyle=tk.ROUND)
+            wing_shape(side, [(7,-2),(25,-32),(52,-58),(83,-74),
+                              (105,-72),(97,-62),(78,-46),(62,-40),
+                              (46,-22),(30,-23),(17,1)], wingbeat,
+                       fill="#e84b50", outline="", smooth=True, splinesteps=18)
+            # Three graceful blue digits divide the membrane into broad panels.
+            wing_bone(side, [(4,2),(25,-31),(55,-60),(84,-77),(111,-76)], wingbeat, 7)
+            wing_bone(side, [(25,-31),(64,-40),(98,-59)], wingbeat, 5)
+            # Soft membrane shadows tuck under each finger; no extra wire lattice.
+            wing_shape(side, [(27,-29),(48,-49),(43,-27),(31,-15)], wingbeat,
+                       fill="#a82741", outline="")
+            wing_shape(side, [(51,-49),(78,-56),(62,-38),(49,-27)], wingbeat,
+                       fill="#a82741", outline="")
+
+        # A tapered, jointed snake tail follows a hip-driven wave.
+        tail_sway = math.sin(t * (1.4 + rage * 4.2)) * (7 + rage * 11)
+        anchors = [(-31,28),(-57,51),(-84,44+tail_sway*.35),
+                   (-110,57+tail_sway),(-138,51+tail_sway),(-159,37+tail_sway)]
+        centers=[]
+        for seg in range(len(anchors)-1):
+            p0,p1=anchors[max(0,seg-1)],anchors[seg]
+            p2,p3=anchors[seg+1],anchors[min(len(anchors)-1,seg+2)]
+            for j in range(8):
+                u=j/8; u2=u*u; u3=u2*u
+                x=.5*((2*p1[0])+(-p0[0]+p2[0])*u+(2*p0[0]-5*p1[0]+4*p2[0]-p3[0])*u2+(-p0[0]+3*p1[0]-3*p2[0]+p3[0])*u3)
+                y=.5*((2*p1[1])+(-p0[1]+p2[1])*u+(2*p0[1]-5*p1[1]+4*p2[1]-p3[1])*u2+(-p0[1]+3*p1[1]-3*p2[1]+p3[1])*u3)
+                centers.append((x,y))
+        centers.append(anchors[-1])
+        upper,lower,frame=[],[],[]
+        for i,(x,y) in enumerate(centers):
+            a,b=centers[max(0,i-1)],centers[min(len(centers)-1,i+1)]
+            dx,dy=b[0]-a[0],b[1]-a[1]
+            ln=max(.001,math.hypot(dx,dy)); tx,ty=dx/ln,dy/ln
+            nx,ny=-ty,tx
+            u=i/max(1,len(centers)-1); r=15*(1-u)+3*u
+            upper.append((x+nx*r,y+ny*r)); lower.append((x-nx*r,y-ny*r))
+            frame.append((tx,ty,nx,ny,r))
+        ribbon=upper+list(reversed(lower))
+        c.create_polygon(*coords([v for q in ribbon for v in q]),
+                         fill=ink,outline=ink,smooth=True,splinesteps=18)
+        inner=[]
+        for i,(x,y) in enumerate(centers):
+            tx,ty,nx,ny,r=frame[i]; rr=max(1,r-3)
+            inner.append((x+nx*rr,y+ny*rr))
+        inner.extend((x-frame[i][2]*max(1,frame[i][4]-3),
+                      y-frame[i][3]*max(1,frame[i][4]-3))
+                     for i,(x,y) in reversed(list(enumerate(centers))))
+        c.create_polygon(*coords([v for q in inner for v in q]),
+                         fill=blue,outline="",smooth=True,splinesteps=18)
+        # Vertebrae and scale ridges follow the bend, instead of a plain curved tube.
+        for i in range(3,len(centers)-5,5):
+            x,y=centers[i]; tx,ty,nx,ny,r=frame[i]
+            line(x-tx*r*.7,y-ty*r*.7,x+tx*r*.7,y+ty*r*.7,
+                 fill="#0874ae",width=max(1,round(2*s)),capstyle=tk.ROUND)
+            line(x+nx*(r-5)+tx*3,y+ny*(r-5)+ty*3,
+                 x+nx*(r-5)-tx*3,y+ny*(r-5)-ty*3,
+                 fill=light_blue,width=max(1,round(1.6*s)),capstyle=tk.ROUND)
+        for i in range(7,len(centers)-5,8):
+            x,y=centers[i]; tx,ty,nx,ny,r=frame[i]
+            bx,by=x+nx*(r-1),y+ny*(r-1)
+            poly(bx-tx*5,by-ty*5,x+nx*(r+11),y+ny*(r+11),
+                 bx+tx*6,by+ty*6,fill=red,outline=ink,
+                 width=max(1,round(1.7*s)),smooth=True)
+
+        # Legs and broad clawed feet are planted behind the torso.
+        step = math.sin(t*2.2)*1.2
+        for side,lift in ((-1,max(0,step)),(1,max(0,-step))):
+            mirrored_poly(side,[(22,30),(46,35),(48,63),(39,73),(19,65),(17,43)],
+                          fill=ink,outline=ink,width=lw,smooth=True,splinesteps=16)
+            mirrored_poly(side,[(25,32),(42,38),(44,61),(37,67),(23,61),(21,43)],
+                          fill=blue,outline="",smooth=True,splinesteps=16)
+            oval(side*34-22,57-lift,side*34+22,79-lift,
+                 fill=blue,outline=ink,width=lw)
+            for toe in (-12,0,12):
+                oval(side*34+toe-6,66-lift,side*34+toe+6,77-lift,
+                     fill=blue,outline=ink,width=max(1,round(1.2*s)))
+                poly(side*34+toe-2,72-lift,side*34+toe+3,82-lift,
+                     side*34+toe+7,72-lift,fill="#f5f0df",outline=ink,
+                     width=max(1,round(1.2*s)))
+
+        # Torso and neck silhouette with orange, individually shaded belly plates.
+        oval(-46,-58,46,55,fill=blue,outline=ink,width=lw)
+        oval(-24,-99,24,-45,fill=blue,outline=ink,width=lw)
+        poly(-18,-91,-29,-70,-31,-34,-26,10,-18,45,
+             18,45,26,10,31,-34,29,-70,18,-91,
+             fill=belly,outline=ink,width=max(2,round(2.5*s)),
+             smooth=True,splinesteps=18)
+        for y,half in ((-68,22),(-48,28),(-27,30),(-5,29),(17,26),(36,20)):
+            line(-half,y,-half*.55,y+3,0,y+4,half*.55,y+3,half,y,
+                 fill=belly_shadow,width=max(2,round(2*s)),smooth=True,capstyle=tk.ROUND)
+            line(-half*.58,y-2,0,y,half*.58,y-2,
+                 fill=belly_hi,width=max(1,round(1.4*s)),smooth=True,capstyle=tk.ROUND)
+
+        # Arms attach below each shoulder: deltoids, biceps, elbows, forearms and hands.
+        for side in (-1,1):
+            arm=[(28,-55),(39,-63),(53,-58),(63,-43),(65,-27),
+                 (59,-12),(54,-2),(46,-7),(44,-23),(37,-34)]
+            mirrored_poly(side,[(x,y+3) for x,y in arm],
+                          fill="#061d31",outline=ink,width=lw,smooth=True,splinesteps=18)
+            mirrored_poly(side,arm,fill=blue,outline=ink,width=lw,
+                          smooth=True,splinesteps=18)
+            oval(side*45-12,-56,side*45+12,-32,
+                 fill=light_blue,outline=ink,width=max(1,round(1.6*s)))
+            line(side*39,-49,side*48,-41,side*55,-28,
+                 fill="#8fe5f2",width=max(1,round(2*s)),capstyle=tk.ROUND,smooth=True)
+            oval(side*52-9,-19,side*52+9,-2,
+                 fill=blue,outline=ink,width=max(1,round(1.8*s)))
+            oval(side*50-11,-3,side*50+12,19,
+                 fill=blue,outline=ink,width=lw)
+            for finger in (-1,0,1):
+                fx=side*50+finger*6
+                line(fx,13,fx+side*2,20,
+                     fill=blue,width=max(3,round(4.2*s)),capstyle=tk.ROUND,smooth=True)
+                line(fx+side*2,19,fx+side*4,23,
+                     fill="#f7f1dd",width=max(1,round(1.8*s)),capstyle=tk.ROUND)
+
+        # Shoulder plates and highlight planes add muscle volume to the chest.
+        for side in (-1,1):
             for j in range(3):
-                claw_x = side * 43 + side * (j - 1) * 7
-                line(claw_x, 25, claw_x + side * 3, 33,
-                     fill="#f5f1dd", width=max(1, round(2 * s)),
-                     capstyle=tk.ROUND)
+                x=side*(31+j*4); y=-39+j*10
+                poly(x-4,y-2,x,y-5,x+4,y-1,x,y+4,
+                     fill="#44c5e6",outline="")
+        oval(-36,-45,-24,-31,fill="#64d5ed",outline="")
 
-        # Neck and large round head with two bright, expressive eyes.
-        oval(-27, -105, 27, -53, fill=blue, outline=outline, width=line_w)
-        oval(-54, -146, 54, -62, fill=blue, outline=outline, width=line_w)
-        # Rounded cheek pads and temple scales.
-        oval(-53, -100, -28, -73, fill=blue_light, outline=outline,
-             width=max(1, round(1.8 * s)))
-        oval(28, -100, 53, -73, fill=blue_light, outline=outline,
-             width=max(1, round(1.8 * s)))
+        # A tidy pair of small frills frames the crown without crowding the arms.
         for side in (-1, 1):
-            for y in (-91, -81):
-                oval(side * 43 - 3, y, side * 43 + 1, y + 4,
-                     fill="#8ce5f1", outline="")
+            mirrored_poly(side, [(45,-111),(56,-119),(53,-105)],
+                          fill=red, outline=ink, width=max(1,round(1.5*s)),
+                          smooth=True)
 
-        # Curved horns with segmented highlights, plus a flame-shaped crest.
-        for side in (-1, 1):
-            horn_x = side * 37
-            poly(horn_x - 12, -133, horn_x - 19, -157,
-                 horn_x - 15, -170, horn_x - 5, -150,
-                 horn_x + 11, -133,
-                 fill="#eee9db", outline=outline, width=line_w,
-                 smooth=True, splinesteps=16)
-            line(horn_x - 13, -151, horn_x - 4, -147,
-                 fill="#aaa99f", width=max(1, round(1.5 * s)), smooth=True)
-            line(horn_x - 14, -160, horn_x - 6, -157,
-                 fill="#aaa99f", width=max(1, round(1.5 * s)), smooth=True)
-        poly(-10, -137, -7, -162, 7, -150, 15, -137,
-             fill="#ff743f", outline=outline, width=line_w,
-             smooth=True, splinesteps=14)
-        # Small side spines add a bright red silhouette around the head.
-        for side, y in ((-1, -116), (1, -117), (-1, -96), (1, -96)):
-            x = side * (50 if y < -105 else 53)
-            poly(x - 3, y - 7, x + side * 12, y - 1,
-                 x - 2, y + 7, fill="#f05b43", outline=outline,
-                 width=max(1, round(1.5 * s)), smooth=True)
+        # Large front-facing head with horns that curl outward on their own sides.
+        oval(-54,-146,54,-61,fill=blue,outline=ink,width=lw)
+        for side in (-1,1):
+            horn=[(side*29,-132),(side*42,-144),(side*48,-158),
+                  (side*40,-170),(side*34,-156),(side*23,-143)]
+            poly(*[v for q in horn for v in q],fill="#eeeae1",outline=ink,
+                 width=lw,smooth=True,splinesteps=18)
+            line(side*36,-148,side*40,-154,fill="#aeb3b5",
+                 width=max(1,round(2*s)),smooth=True)
+            line(side*39,-158,side*43,-163,fill="#aeb3b5",
+                 width=max(1,round(2*s)),smooth=True)
+        poly(-13,-136,-9,-158,0,-148,8,-163,17,-136,8,-130,-7,-130,
+             fill="#ff743f",outline=ink,width=lw,smooth=True,splinesteps=16)
+        # Cheek pads and tiny temple scales sit on top of the head silhouette.
+        oval(-52,-107,-31,-80,fill=light_blue,outline=ink,width=max(1,round(1.5*s)))
+        oval(31,-107,52,-80,fill=light_blue,outline=ink,width=max(1,round(1.5*s)))
+        for side in (-1,1):
+            for y in (-91,-81):
+                oval(side*43-3,y,side*43+1,y+4,fill="#9af0f6",outline="")
 
-        blink_phase = t % 4.8
-        blink = blink_phase < .14
-        look = 2.2 if angry else math.sin(t * .75) * 2
-        if blink:
-            for side in (-1, 1):
-                line(side * 35, -111, side * 21, -106, side * 7, -111,
-                     fill=outline, width=max(2, round(4 * s)), smooth=True)
-        else:
-            for side in (-1, 1):
-                ex = side * 21
-                oval(ex - 16, -128, ex + 16, -94,
-                     fill="#fffdf3", outline=outline, width=line_w)
-                oval(ex - 9 + look, -123, ex + 8 + look, -98,
-                     fill="#27bd9a" if not angry else "#ffbd42", outline="")
-                oval(ex - 4 + look, -121, ex + 4 + look, -99,
-                     fill=outline, outline="")
-                oval(ex - 5 + look, -120, ex - 1 + look, -115,
-                     fill="white", outline="")
-                oval(ex + 3 + look, -105, ex + 6 + look, -102,
-                     fill="#d9ffff", outline="")
-        # Eyebrows lift when calm and tilt inward when deadlines get close.
-        for side in (-1, 1):
-            if angry:
-                line(side * 39, -135, side * 23, -132,
-                     side * 7, -137, fill=outline,
-                     width=max(2, round(4 * s)), smooth=True)
+        # Eyeballs stay aligned while pupils ease toward the mouse pointer.
+        blink=t%4.7<.14
+        for side in (-1,1):
+            ex=side*21
+            oval(ex-16,-128,ex+16,-94,fill="#fffdf3",outline=ink,width=lw)
+            if blink:
+                line(ex-13,-110,ex,-105,ex+13,-110,
+                     fill=ink,width=max(2,round(3*s)),smooth=True)
             else:
-                line(side * 38, -133, side * 22, -138,
-                     side * 7, -133, fill=outline,
-                     width=max(2, round(3 * s)), smooth=True)
+                pupil_x=ex+self.gaze_x
+                pupil_y=-111+self.gaze_y
+                oval(pupil_x-9,pupil_y-12,pupil_x+8,pupil_y+11,
+                     fill="#2cb99a" if rage<.65 else "#f4a342",outline="")
+                oval(pupil_x-4,pupil_y-11,pupil_x+4,pupil_y+10,fill=ink,outline="")
+                oval(pupil_x-5,pupil_y-9,pupil_x-1,pupil_y-4,fill="white",outline="")
+                oval(pupil_x+2,pupil_y+5,pupil_x+5,pupil_y+8,fill="#d7ffff",outline="")
+            brow_y=-136+rage*8
+            line(ex-15,brow_y-(3 if not angry else 0),ex,brow_y-5,
+                 ex+15,brow_y-(3 if not angry else 0),fill=ink,
+                 width=max(2,round((2.5+rage*2)*s)),capstyle=tk.ROUND,smooth=True)
 
-        # Wide muzzle, nostrils and a friendly smile with two tiny fangs.
-        oval(-38, -101, 38, -66, fill=blue_light,
-             outline=outline, width=line_w)
-        oval(-26, -97, -4, -77, fill="#49c5e9", outline="")
-        oval(4, -97, 26, -77, fill="#49c5e9", outline="")
-        oval(-21, -91, -12, -84, fill=outline, outline="")
-        oval(12, -91, 21, -84, fill=outline, outline="")
-        line(-28, -78, -16, -71, 0, -75, 16, -71, 28, -78,
-             fill=outline, width=max(2, round(2.4 * s)),
-             smooth=True, capstyle=tk.ROUND)
-        for x in (-19, 12):
-            poly(x, -77, x + 7, -76, x + 5, -68,
-                 fill="#fffdf3", outline=outline,
-                 width=max(1, round(1.1 * s)))
-
-        # Layered fire breath when furious, overdue, or freshly poked.
-        flame_length = 0
+        # Muzzle, nostrils, grin and fangs; the roar opens into a shaded mouth.
+        oval(-40,-99,40,-63,fill=light_blue,outline=ink,width=lw)
+        oval(-27,-95,-4,-77,fill="#5bcbe8",outline="")
+        oval(4,-95,27,-77,fill="#5bcbe8",outline="")
+        oval(-22,-91,-13,-84,fill=ink,outline="")
+        oval(13,-91,22,-84,fill=ink,outline="")
         if fire:
-            flame_length = 60 + 24 * urgent
-            flick = math.sin(t * 14)
-            poly(31, -80, 55, -92 - flick * 3,
-                 31 + flame_length, -74 + flick * 4,
-                 57, -61, 31, -69,
-                 fill="#e84b3f", outline=outline,
-                 width=max(1, round(1.6 * s)), smooth=True, splinesteps=16)
-            poly(31, -78, 53, -85 - flick * 2,
-                 31 + flame_length * .76, -73 + flick * 2,
-                 54, -66, 31, -70,
-                 fill="#ff9c35", outline="", smooth=True)
-            poly(31, -76, 49, -81,
-                 31 + flame_length * .49, -73,
-                 50, -70, 31, -71,
-                 fill="#fff1a5", outline="", smooth=True)
+            oval(-20,-79,20,-58,fill="#47182c",outline=ink,width=max(1,round(1.5*s)))
+            oval(-10,-64,11,-58,fill="#ed5365",outline="")
+            for x in (-16,9):
+                poly(x,-79,x+7,-78,x+5,-70,fill="#fffdf1",outline=ink,
+                     width=max(1,round(1*s)))
+        else:
+            line(-28,-78,-16,-70,0,-74,16,-70,28,-78,
+                 fill=ink,width=max(2,round(2.5*s)),smooth=True)
+            for x in (-17,10):
+                poly(x,-77,x+7,-76,x+5,-69,fill="#fffdf1",outline=ink,
+                     width=max(1,round(1*s)))
+        for side in (-1,1):
+            oval(side*34-4,-83,side*34+1,-79,fill="#f39a9a",outline="")
+            oval(side*40-2,-89,side*40+1,-86,fill="#fac0b3",outline="")
 
-        # A few warm embers drift from the flame without random frame flicker.
-        next_particles = []
-        for x, y, age, velocity in self.particles[-16:]:
-            age += .045
-            y -= velocity * s
-            x += math.sin(t * 5 + age * 9) * .45 * s
-            if age < 1:
-                radius = max(1, (1 - age) * 3 * s)
-                c.create_oval(x - radius, y - radius, x + radius, y + radius,
-                              fill="#ffd16b" if age < .55 else "#f07855", outline="")
-                next_particles.append([x, y, age, velocity])
-        self.particles = next_particles
-        if fire and now >= self.next_ember_at and len(self.particles) < 16:
-            x, y = p(31 + flame_length, -73)
-            self.particles.append([x, y, 0, 1.25])
-            self.next_ember_at = now + .12
+        # Deadline rage eases into stronger wingbeats, a hotter gaze and fire.
+        flame_length=0
+        if fire:
+            flame_length=58+34*rage
+            flick=math.sin(t*(13+rage*9))
+            poly(28,-77,49,-91-flick*3,28+flame_length,-74+flick*5,
+                 53,-59,28,-67,fill="#df3c3b",outline=ink,
+                 width=max(1,round(1.7*s)),smooth=True,splinesteps=16)
+            poly(29,-75,49,-84-flick*2,29+flame_length*.75,-73+flick*3,
+                 51,-64,29,-69,fill="#ff982e",outline="",smooth=True)
+            poly(29,-73,45,-79,29+flame_length*.48,-72,48,-68,29,-70,
+                 fill="#fff3ae",outline="",smooth=True)
+            pulse=(math.sin(t*5)+1)/2
+            oval(-69-pulse*2,-155-pulse*2,69+pulse*2,85+pulse*2,
+                 fill="",outline="#df5748",width=max(1,round(rage*2)))
 
-        # The compact status card remains visually separate from the mascot.
-        text = self.quip if now < self.quip_until else self.label
-        card_w = min(W - 24, max(206, min(350, 34 + len(text) * 6.2)))
-        x1, y1 = (W - card_w) / 2, 12
-        x2, y2 = x1 + card_w, 54
-        c.create_rectangle(x1 + 2, y1 + 3, x2 + 2, y2 + 3,
-                           fill="#11131f", outline="")
-        c.create_rectangle(x1, y1, x2, y2, fill="#242638",
-                           outline=color(mix(self.rgb, (255, 255, 255), .15)), width=1)
-        c.create_oval(x1 + 12, y1 + 13, x1 + 26, y1 + 27,
-                      fill=color(self.rgb), outline="")
-        c.create_text(x1 + 34, (y1 + y2) / 2, text=text, anchor="w",
-                      fill="#f6f1e7", font=("Segoe UI", 10, "bold"))
-        mx1, my, mx2 = x1 + 12, y2 - 5, x2 - 12
-        c.create_line(mx1, my, mx2, my, fill="#414356", width=2)
-        c.create_line(mx1, my, mx1 + (mx2 - mx1) * urgent, my,
-                      fill=color(self.rgb), width=2)
+        next_particles=[]
+        for x,y,age,velocity in self.particles[-16:]:
+            age+=.045; y-=velocity*s
+            x+=math.sin(t*5+age*9)*.45*s
+            if age<1:
+                r=max(1,(1-age)*3*s)
+                c.create_oval(x-r,y-r,x+r,y+r,
+                              fill="#ffd16b" if age<.55 else "#f07855",outline="")
+                next_particles.append([x,y,age,velocity])
+        self.particles=next_particles
+        if fire and now>=self.next_ember_at and len(self.particles)<16:
+            ex,ey=p(28+flame_length,-73)
+            self.particles.append([ex,ey,0,1.2+rage*.6])
+            self.next_ember_at=now+.12
+
+        # Clear floating deadline card and urgency meter.
+        text=self.quip if now<self.quip_until else self.label
+        card_w=min(W-24,max(206,min(350,34+len(text)*6.2)))
+        x1,y1=(W-card_w)/2,12; x2,y2=x1+card_w,54
+        c.create_rectangle(x1+2,y1+3,x2+2,y2+3,fill="#11131f",outline="")
+        c.create_rectangle(x1,y1,x2,y2,fill="#242638",
+                           outline=color(mix(self.rgb,(255,255,255),.15)),width=1)
+        c.create_oval(x1+12,y1+13,x1+26,y1+27,fill=color(self.rgb),outline="")
+        c.create_text(x1+34,(y1+y2)/2,text=text,anchor="w",
+                      fill="#f6f1e7",font=("Segoe UI",10,"bold"))
+        mx1,my,mx2=x1+12,y2-5,x2-12
+        c.create_line(mx1,my,mx2,my,fill="#414356",width=2)
+        c.create_line(mx1,my,mx1+(mx2-mx1)*urgent,my,
+                      fill=color(self.rgb),width=2)
     def slay(self,rid):
         self.store.done(rid); self.roar_until=time.time()+1.2; self.refresh()
         self.say(f"A mighty victory! {self.store.slain()} deadline{'s' if self.store.slain()!=1 else ''} conquered.",4)
@@ -495,22 +563,39 @@ class DragonApp:
         if getattr(self,"manager",None) is not None and self.manager.winfo_exists():
             self.manager.lift(); self.manager.focus_force(); return
         win=tk.Toplevel(self.root); self.manager=win
-        win.title("Deadline Dragon · Lair ledger"); win.attributes("-topmost",True)
-        win.resizable(False,False); win.geometry(f"+{max(0,self.root.winfo_x()-470)}+{max(0,self.root.winfo_y()-80)}")
+        win.title("Deadline Dragon · Quest board"); win.attributes("-topmost",True)
+        win.configure(bg="#111827")
+        win.resizable(False,False); win.geometry(f"+{max(0,self.root.winfo_x()-510)}+{max(0,self.root.winfo_y()-80)}")
         win.bind("<Escape>",lambda _e:win.destroy())
-        frm=ttk.Frame(win,padding=16); frm.grid()
-        ttk.Label(frm,text="Your quests",font=("Segoe UI",14,"bold")).grid(row=0,column=0,columnspan=3,sticky="w",pady=(0,10))
+        style=ttk.Style(win)
+        try: style.theme_use("clam")
+        except tk.TclError: pass
+        style.configure("Lair.TFrame",background="#111827")
+        style.configure("Card.TFrame",background="#1c2638")
+        style.configure("Lair.TLabel",background="#111827",foreground="#e8edf5",font=("Segoe UI",10))
+        style.configure("Muted.TLabel",background="#111827",foreground="#93a4bd",font=("Segoe UI",9))
+        style.configure("Title.TLabel",background="#111827",foreground="#f5f7fb",font=("Segoe UI",18,"bold"))
+        style.configure("Accent.TButton",background="#25a9d0",foreground="#071522",font=("Segoe UI",9,"bold"),padding=(12,7),borderwidth=0)
+        style.map("Accent.TButton",background=[("active","#5bd0e9"),("disabled","#475569")])
+        style.configure("Quiet.TButton",background="#29364a",foreground="#e8edf5",font=("Segoe UI",9),padding=(11,7),borderwidth=0)
+        style.map("Quiet.TButton",background=[("active","#3a4c66")])
+        style.configure("Lair.Treeview",background="#1c2638",fieldbackground="#1c2638",foreground="#e8edf5",rowheight=30,borderwidth=0,font=("Segoe UI",9))
+        style.configure("Lair.Treeview.Heading",background="#29364a",foreground="#c7d3e4",font=("Segoe UI",9,"bold"),padding=(7,8),relief="flat")
+        style.map("Lair.Treeview",background=[("selected","#176b88")],foreground=[("selected","#ffffff")])
+        frm=ttk.Frame(win,padding=20,style="Lair.TFrame"); frm.grid()
+        ttk.Label(frm,text="QUEST BOARD",style="Title.TLabel").grid(row=0,column=0,columnspan=3,sticky="w")
+        ttk.Label(frm,text="Small steps tame big deadlines.",style="Muted.TLabel").grid(row=1,column=0,columnspan=3,sticky="w",pady=(2,16))
         title_v,due_v=tk.StringVar(),tk.StringVar()
-        ttk.Label(frm,text="Deadline").grid(row=1,column=0,sticky="w")
-        ttk.Label(frm,text="Due date · YYYY-MM-DD or days").grid(row=1,column=1,sticky="w",padx=(8,0))
-        title_e=ttk.Entry(frm,textvariable=title_v,width=26); title_e.grid(row=2,column=0)
-        due_e=ttk.Entry(frm,textvariable=due_v,width=24); due_e.grid(row=2,column=1,padx=(8,0))
-        tree=ttk.Treeview(frm,columns=("title","due","left"),show="headings",height=9)
-        for col,label,width in (("title","Quest",210),("due","Due",100),("left","Time left",115)):
+        ttk.Label(frm,text="QUEST NAME",style="Muted.TLabel").grid(row=2,column=0,sticky="w")
+        ttk.Label(frm,text="DUE DATE  ·  YYYY-MM-DD OR DAYS",style="Muted.TLabel").grid(row=2,column=1,sticky="w",padx=(8,0))
+        title_e=ttk.Entry(frm,textvariable=title_v,width=28); title_e.grid(row=3,column=0,sticky="ew",pady=(5,0))
+        due_e=ttk.Entry(frm,textvariable=due_v,width=24); due_e.grid(row=3,column=1,padx=(8,0),sticky="ew",pady=(5,0))
+        tree=ttk.Treeview(frm,columns=("title","due","left"),show="headings",height=8,style="Lair.Treeview",selectmode="browse")
+        for col,label,width in (("title","QUEST",230),("due","DUE",105),("left","TIME LEFT",120)):
             tree.heading(col,text=label); tree.column(col,width=width,anchor="w")
-        tree.grid(row=3,column=0,columnspan=3,pady=(12,7),sticky="ew")
-        tree.tag_configure("late",foreground="#bf3d45")
-        status=ttk.Label(frm,text=""); status.grid(row=4,column=0,sticky="w")
+        tree.grid(row=4,column=0,columnspan=3,pady=(16,12),sticky="ew")
+        tree.tag_configure("late",foreground="#ff8c91")
+        status=ttk.Label(frm,text="",style="Muted.TLabel"); status.grid(row=5,column=0,sticky="w")
         def reload():
             tree.delete(*tree.get_children())
             for rid,title,due in self.store.pending():
@@ -534,10 +619,10 @@ class DragonApp:
         def remove():
             rid=selected()
             if rid is not None: self.store.delete(rid); reload(); self.refresh()
-        ttk.Button(frm,text="Add quest",command=add).grid(row=2,column=2,padx=(8,0))
-        buttons=ttk.Frame(frm); buttons.grid(row=4,column=1,columnspan=2,sticky="e")
-        ttk.Button(buttons,text="Mark conquered",command=slay).pack(side="left",padx=(0,6))
-        ttk.Button(buttons,text="Delete",command=remove).pack(side="left")
+        ttk.Button(frm,text="＋  Add quest",command=add,style="Accent.TButton").grid(row=3,column=2,padx=(10,0),pady=(5,0),sticky="ew")
+        buttons=ttk.Frame(frm,style="Lair.TFrame"); buttons.grid(row=5,column=1,columnspan=2,sticky="e")
+        ttk.Button(buttons,text="✓  Mark conquered",command=slay,style="Accent.TButton").pack(side="left",padx=(0,7))
+        ttk.Button(buttons,text="Delete",command=remove,style="Quiet.TButton").pack(side="left")
         title_e.bind("<Return>",add); due_e.bind("<Return>",add)
         reload(); title_e.focus_set()
 
