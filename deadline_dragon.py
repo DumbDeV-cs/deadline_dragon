@@ -765,24 +765,59 @@ class DragonApp:
             oval(side * 34 - 4, -83, side * 34 + 1, -79, fill="#f39a9a", outline="")
             oval(side * 40 - 2, -89, side * 40 + 1, -86, fill="#fac0b3", outline="")
 
-        # Deadline rage eases into stronger wingbeats, a hotter gaze and fire.
+        # Deadline rage: a big stylized flame with layered tongues and flying licks.
         flame_length = 0
         if fire:
-            flame_length = 46 + 25 * rage
-            flick = math.sin(t * (13 + rage * 9))
-            spread = 1 + flick * .07
-            far = -77 + flame_length
-            poly(0, -77, -7, -82, -9, -69, -17 * spread, -56,
-                 -22 * spread, -40, -16 * spread, far - 8, 0, far + 5,
-                 16 * spread, far - 8, 22 * spread, -40, 17 * spread, -56,
-                 9, -69, 7, -82, fill="#d93643", outline=ink,
-                 width=max(1, round(1.4 * s)), smooth=True, splinesteps=18)
-            poly(0, -75, -5, -69, -12, -54, -13, -43,
-                 0, -77 + flame_length * .76, 13, -43, 12, -54, 5, -69,
-                 fill="#ff982e", outline="", smooth=True, splinesteps=16)
-            poly(0, -72, -4, -65, -7, -54, 0, -77 + flame_length * .48,
-                 7, -54, 4, -65, fill="#fff3ae", outline="",
-                 smooth=True, splinesteps=14)
+            flame_length = 70 + 34 * rage
+            L = flame_length
+            right = [(8, 0), (15, .1), (26, .26), (37, .45), (42, .64),
+                     (49, .84), (49, .84), (41, .78), (37, .97), (37, .97),
+                     (28, .85), (21, 1.04), (21, 1.04), (12, .88), (0, 1.12), (0, 1.12)]
+            left = [(-x, y) for x, y in reversed(right[:-1])]
+            outline_pts = right + left
+
+            def flame_layer(wid, ln, phase, fill, edge="", edge_w=1):
+                values = []
+                speed = 10 + rage * 6
+                for x, y in outline_pts:
+                    wob = math.sin(t * speed + y * 5 + phase)
+                    sway = math.sin(t * 7 + phase) * 5 * y
+                    values.extend((x * wid * (1 + .05 * wob) + sway,
+                                   -77 + y * ln + abs(wob) * 2.5 * y))
+                kw = dict(fill=fill, smooth=True, splinesteps=14, joinstyle=tk.ROUND)
+                if edge:
+                    kw.update(outline=edge, width=edge_w)
+                else:
+                    kw.update(outline="")
+                poly(*values, **kw)
+
+            flame_layer(1.0, L, 0.0, "#ee4b2b", ink, max(2, round(2.4 * s)))
+            flame_layer(.70, L * .86, 1.3, "#ff8f2b")
+            flame_layer(.38, L * .62, 2.6, "#ffe56b")
+
+            # Curling swirl strokes inside the flame.
+            for k, (sx, sy) in enumerate(((-14, .30), (12, .42), (-6, .56))):
+                wob = math.sin(t * 9 + k * 2)
+                x0 = sx + wob * 2
+                y0 = -77 + L * sy
+                line(x0, y0, x0 + 7, y0 + 8, x0 + 3, y0 + 18,
+                     fill="#ffc94a" if k != 1 else "#ee4b2b",
+                     width=max(1, round(2 * s)), smooth=True, capstyle=tk.ROUND)
+
+            # Detached flame licks drifting off to the sides.
+            for i in range(4):
+                side = -1 if i % 2 else 1
+                ph = (t * .9 + i * .27) % 1
+                lx = side * (36 + ph * 26 + i * 4)
+                ly = -77 + L * (.25 + ph * .7)
+                r = (1 - ph) * 5.5 + 1.5
+                drop = [(0, -2 * r), (.7 * r, -.6 * r), (r, .4 * r), (0, r),
+                        (-r, .4 * r), (-.7 * r, -.6 * r)]
+                values = []
+                for dx, dy in drop:
+                    values.extend((lx + dx, ly + dy))
+                poly(*values, fill="#ffb02e" if ph < .5 else "#ee4b2b",
+                     outline=ink, width=1, smooth=True, splinesteps=10)
 
         next_particles = []
         for x, y, age, velocity in self.particles[-16:]:
@@ -796,7 +831,7 @@ class DragonApp:
                 next_particles.append([x, y, age, velocity])
         self.particles = next_particles
         if fire and now >= self.next_ember_at and len(self.particles) < 16:
-            ex, ey = p(0, -77 + flame_length)
+            ex, ey = p(0, -77 + flame_length * 1.1)
             self.particles.append([ex, ey, 0, 1.2 + rage * .6])
             self.next_ember_at = now + .12
 
