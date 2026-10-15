@@ -1,4 +1,4 @@
-"""Deadline Dragon: a tiny animated desktop companion for your deadlines.
+"""Deadline Dragon: a tiny cool animated desktop companion for your deadlines.
 
 Run with: python deadline_dragon.py
 
