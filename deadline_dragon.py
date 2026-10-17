@@ -15,6 +15,7 @@ The quest board also has a month calendar and quick-pick buttons.
 
 import calendar
 import math
+import random
 import re
 import sqlite3
 import sys
@@ -33,6 +34,11 @@ FAR_FUTURE = datetime(9999, 12, 31, 23, 59, 59)
 WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 HELP = ("Try: tomorrow 5pm, fri, +3d, 2h, 2026-11-30 14:00, "
         "YYYY-MM, or a number of days from today.")
+
+# Fire colour ramp: white-hot core -> yellow -> orange -> red -> dark smoke.
+FLAME_STOPS = [(0.0, (255, 248, 205)), (.2, (255, 214, 82)), (.45, (250, 140, 40)),
+               (.75, (214, 62, 42)), (1.0, (92, 38, 62))]
+SMOKE_STOPS = [(0.0, (150, 158, 178)), (1.0, (52, 58, 78))]
 
 if sys.platform.startswith("win"):
     FONT = "Segoe UI"
@@ -59,6 +65,15 @@ def color(rgb):
 
 def shade(rgb, amount):
     return mix(rgb, (0, 0, 0), 1 - amount)
+
+
+def gradient(stops, u):
+    """Sample a colour ramp [(position, rgb), ...] at u in 0..1."""
+    u = clamp(u, 0.0, 1.0)
+    for (u0, c0), (u1, c1) in zip(stops, stops[1:]):
+        if u <= u1:
+            return mix(c0, c1, (u - u0) / (u1 - u0))
+    return stops[-1][1]
 
 
 def end_of_day(day):
@@ -284,8 +299,12 @@ class DragonApp:
         self.gaze_target_y = 0.0
         self.roar_until = 0
         self.quip, self.quip_until = "", 0
-        self.particles = []
-        self.next_ember_at = 0.0
+        # Fire / smoke particle systems (screen coordinates, updated in tick()).
+        self.flames = []            # [x, y, vx, vy, age, life, radius, kind]  kind 0=flame 1=spark
+        self.smoke = []             # [x, y, vx, vy, age, life, radius]
+        self.mouth = (190.0, 182.0)
+        self.nostrils = ((176.0, 168.0), (204.0, 168.0))
+        self.next_smoke_at = 0.0
         self.levels = {}            # rid -> urgency level already announced
         self.press_xy = (0, 0)
         self.drag_off = (0, 0)
@@ -492,8 +511,60 @@ class DragonApp:
         gaze_ease = 1 - math.exp(-15 * dt)
         self.gaze_x += (self.gaze_target_x - self.gaze_x) * gaze_ease
         self.gaze_y += (self.gaze_target_y - self.gaze_y) * gaze_ease
+        self.update_fx(now, dt)
         self.draw()
         self.root.after(33, self.tick)
+
+    # ---- fire & smoke simulation ---------------------------------------
+    def update_fx(self, now, dt):
+        s = self.scale
+        fire = now < self.roar_until or self.rage > .78
+        mx, my = self.mouth
+
+        if fire:
+            heat = .85 + .3 * self.rage
+            for _ in range(2 + (self.rage > .95) + (now < self.roar_until)):
+                ang = math.pi / 2 + random.uniform(-.52, .52)
+                speed = random.uniform(150, 245) * heat
+                self.flames.append([
+                    mx + random.uniform(-9, 9) * s, my + random.uniform(-3, 3),
+                    math.cos(ang) * speed, math.sin(ang) * speed,
+                    0.0, random.uniform(.42, .72), random.uniform(7, 12.5) * s * heat, 0])
+            if random.random() < .5:
+                ang = math.pi / 2 + random.uniform(-1.0, 1.0)
+                speed = random.uniform(190, 330)
+                self.flames.append([
+                    mx, my, math.cos(ang) * speed, math.sin(ang) * speed,
+                    0.0, random.uniform(.5, .95), random.uniform(1.3, 2.4) * s, 1])
+
+        drag = math.exp(-2.4 * dt)
+        alive = []
+        for f in self.flames:
+            f[4] += dt
+            if f[4] >= f[5]:
+                continue
+            f[0] += f[2] * dt
+            f[1] += f[3] * dt
+            f[2] = f[2] * drag + math.sin(now * 9 + f[1] * .06) * 70 * dt
+            f[3] = f[3] * drag - (175 if f[7] == 0 else 40) * dt  # flames rise as they cool
+            alive.append(f)
+        self.flames = alive[-120:]
+
+        # Curls of smoke from the nostrils once the dragon is properly cross.
+        if self.mood in ("angry", "furious", "overdue") and not fire and now >= self.next_smoke_at:
+            for nx, ny in self.nostrils:
+                self.smoke.append([nx, ny, random.uniform(-7, 7), random.uniform(-30, -18),
+                                   0.0, random.uniform(.9, 1.5), random.uniform(2.2, 3.4) * s])
+            self.next_smoke_at = now + .26 - .08 * self.rage
+        alive = []
+        for p_ in self.smoke:
+            p_[4] += dt
+            if p_[4] >= p_[5]:
+                continue
+            p_[0] += (p_[2] + math.sin(now * 3 + p_[1] * .1) * 9) * dt
+            p_[1] += p_[3] * dt
+            alive.append(p_)
+        self.smoke = alive[-30:]
 
     # ---- drawing --------------------------------------------------------
     def draw(self):
@@ -510,6 +581,7 @@ class DragonApp:
         heat = clamp((urgent - .5) / .5, 0, 1) ** .72
         blue = color(mix((12, 166, 229), (220, 55, 70), heat))
         light_blue = color(mix((90, 222, 246), (255, 158, 165), heat))
+        deep_blue = color(mix((8, 112, 168), (150, 30, 52), heat))
         bone_blue = "#147eae"
         ink = "#08283d"
         belly = "#ff973e"
@@ -517,6 +589,7 @@ class DragonApp:
         belly_shadow = "#bd573e"
         red = "#d93648"
         lw = max(2, round(3.1 * s))
+        thin = max(1, round(1.5 * s))
         breath = math.sin(t * (1.3 if asleep else 2.15)) * (3.2 if asleep else 2.5)
         shake = math.sin(t * 31) * rage * 1.05
         cx, cy = 190 + shake, 242 + breath + math.sin(t * 27) * rage * .5
@@ -532,6 +605,10 @@ class DragonApp:
 
         def oval(x1, y1, x2, y2, **kw):
             c.create_oval(*p(x1, y1), *p(x2, y2), **kw)
+
+        def arc(x1, y1, x2, y2, start, extent, **kw):
+            c.create_arc(*p(x1, y1), *p(x2, y2), start=start, extent=extent,
+                         style=tk.ARC, **kw)
 
         def poly(*xy, **kw):
             c.create_polygon(*coords(xy), **kw)
@@ -571,8 +648,17 @@ class DragonApp:
             c.create_line(*coords(values), fill=bone_blue, width=max(2, round(width * s)),
                           capstyle=tk.ROUND, joinstyle=tk.ROUND, smooth=True)
 
+        def wing_line(side, points, angle, fill, width=1.5):
+            values = []
+            for x, y in points:
+                wx, wy = wing_point(side, x, y, angle)
+                values.extend((wx, wy))
+            c.create_line(*coords(values), fill=fill, width=max(1, round(width * s)),
+                          capstyle=tk.ROUND, smooth=True)
+
         # Small contact shadow grounds the upright pose.
         oval(-69, 75, 69, 85, fill="#253548", outline="")
+        oval(-52, 77, 52, 83, fill="#1b2838", outline="")
 
         # Bat wings: one scalloped membrane, finger bones inside its silhouette.
         wingbeat = math.sin(t * (2.1 + rage * 4.2)) * (3 + rage * 6)
@@ -582,19 +668,29 @@ class DragonApp:
                         (102, -91), (128, -94), (122, -69),
                         (106, -77), (92, -43), (76, -55),
                         (59, -16), (43, -31), (26, 5)]
+        membrane_dark = color(mix((185, 47, 70), (60, 14, 40), .35))
         for side in (-1, 1):
             wing_shape(side, wing_outline, wingbeat, fill="#b92f46",
                        outline=ink, width=lw, smooth=True, splinesteps=24,
                        joinstyle=tk.ROUND)
+            # Darker membrane near the body fading to a bright leading edge.
+            wing_shape(side, [(2, 2), (12, -20), (30, -40), (46, -48), (50, -30), (40, -14), (24, 2)],
+                       wingbeat, fill="#8e2340", outline="", smooth=True, splinesteps=18)
             wing_shape(side, [(8, -3), (35, -46), (66, -68), (99, -85),
                               (112, -86), (101, -80), (87, -52), (74, -59),
                               (58, -25), (42, -36), (25, -1)], wingbeat,
                        fill="#e14a50", outline="", smooth=True, splinesteps=20)
             wrist = (53, -62)
+            # Membrane creases radiating from each scallop notch.
+            for a_, b_ in (((106, -77), (74, -66)), ((76, -55), (60, -44)), ((43, -31), (41, -20))):
+                wing_line(side, [a_, b_], wingbeat, membrane_dark, 1.6)
             wing_bone(side, [(0, 3), (22, -30), wrist, (94, -86), (126, -93)], wingbeat, 7)
             wing_bone(side, [wrist, (121, -70)], wingbeat, 5)
             wing_bone(side, [wrist, (92, -43)], wingbeat, 5)
             wing_bone(side, [wrist, (59, -17)], wingbeat, 5)
+            # Cream wing claw at the wrist.
+            wing_shape(side, [(46, -64), (49, -82), (61, -66)], wingbeat,
+                       fill="#f4eedb", outline=ink, width=thin, smooth=True, splinesteps=10)
 
         # A tapered, jointed snake tail follows a hip-driven wave.
         tail_sway = math.sin(t * (.9 if asleep else 1.4 + rage * 4.2)) * (7 + rage * 11)
@@ -626,12 +722,18 @@ class DragonApp:
                      for i, (x, y) in reversed(list(enumerate(centers))))
         c.create_polygon(*coords([v for q in inner for v in q]),
                          fill=blue, outline="", smooth=True, splinesteps=18)
+        # A pale belly stripe under the tail adds roundness.
+        stripe = [(x - frame[i][2] * frame[i][4] * .55, y - frame[i][3] * frame[i][4] * .55)
+                  for i, (x, y) in enumerate(centers) if i % 2 == 0]
+        if len(stripe) > 2:
+            c.create_line(*coords([v for q in stripe for v in q]), fill=light_blue,
+                          width=max(1, round(2.2 * s)), smooth=True, capstyle=tk.ROUND)
         # Vertebrae and scale ridges follow the bend.
         for i in range(3, len(centers) - 5, 5):
             x, y = centers[i]
             tx, ty, nx, ny, r = frame[i]
             line(x - tx * r * .7, y - ty * r * .7, x + tx * r * .7, y + ty * r * .7,
-                 fill="#0874ae", width=max(1, round(2 * s)), capstyle=tk.ROUND)
+                 fill=deep_blue, width=max(1, round(2 * s)), capstyle=tk.ROUND)
             line(x + nx * (r - 5) + tx * 3, y + ny * (r - 5) + ty * 3,
                  x + nx * (r - 5) - tx * 3, y + ny * (r - 5) - ty * 3,
                  fill=light_blue, width=max(1, round(1.6 * s)), capstyle=tk.ROUND)
@@ -642,6 +744,17 @@ class DragonApp:
             poly(bx - tx * 5, by - ty * 5, x + nx * (r + 11), y + ny * (r + 11),
                  bx + tx * 6, by + ty * 6, fill=red, outline=ink,
                  width=max(1, round(1.7 * s)), smooth=True)
+        # Spade-shaped tail tip.
+        ex, ey = centers[-1]
+        tx, ty, nx, ny, _r = frame[-1]
+        poly(ex + nx * 3, ey + ny * 3,
+             ex + tx * 7 + nx * 12, ey + ty * 7 + ny * 12,
+             ex + tx * 27, ey + ty * 27,
+             ex + tx * 7 - nx * 12, ey + ty * 7 - ny * 12,
+             ex - nx * 3, ey - ny * 3,
+             fill=red, outline=ink, width=lw, joinstyle=tk.ROUND)
+        line(ex + tx * 4, ey + ty * 4, ex + tx * 20, ey + ty * 20,
+             fill="#ff8a8e", width=max(1, round(1.6 * s)), capstyle=tk.ROUND)
 
         # Legs and broad clawed feet are planted behind the torso.
         step = math.sin(t * 2.2) * 1.2
@@ -650,18 +763,25 @@ class DragonApp:
                           fill=ink, outline=ink, width=lw, smooth=True, splinesteps=16)
             mirrored_poly(side, [(25, 32), (42, 38), (44, 61), (37, 67), (23, 61), (21, 43)],
                           fill=blue, outline="", smooth=True, splinesteps=16)
+            line(side * 27, 36, side * 26, 54, fill=light_blue,
+                 width=max(1, round(2 * s)), capstyle=tk.ROUND)
             oval(side * 34 - 22, 57 - lift, side * 34 + 22, 79 - lift,
                  fill=blue, outline=ink, width=lw)
+            arc(side * 34 - 18, 60 - lift, side * 34 + 18, 76 - lift, 200, 140,
+                outline=light_blue, width=max(1, round(1.6 * s)))
             for toe in (-12, 0, 12):
                 oval(side * 34 + toe - 6, 66 - lift, side * 34 + toe + 6, 77 - lift,
                      fill=blue, outline=ink, width=max(1, round(1.2 * s)))
-                poly(side * 34 + toe - 2, 72 - lift, side * 34 + toe + 3, 82 - lift,
+                poly(side * 34 + toe - 2, 72 - lift, side * 34 + toe + 3, 83 - lift,
                      side * 34 + toe + 7, 72 - lift, fill="#f5f0df", outline=ink,
                      width=max(1, round(1.2 * s)))
 
         # Torso and neck silhouette with orange, individually shaded belly plates.
         oval(-46, -58, 46, 55, fill=blue, outline=ink, width=lw)
         oval(-24, -99, 24, -45, fill=blue, outline=ink, width=lw)
+        # Rim light on the left, soft shadow on the lower right.
+        arc(-41, -52, 41, 49, 118, 78, outline=light_blue, width=max(2, round(3 * s)))
+        arc(-41, -52, 41, 49, -78, 96, outline=deep_blue, width=max(2, round(3.4 * s)))
         poly(-18, -91, -29, -70, -31, -34, -26, 10, -18, 45,
              18, 45, 26, 10, 31, -34, 29, -70, 18, -91,
              fill=belly, outline=ink, width=max(2, round(2.5 * s)),
@@ -671,6 +791,12 @@ class DragonApp:
                  fill=belly_shadow, width=max(2, round(2 * s)), smooth=True, capstyle=tk.ROUND)
             line(-half * .58, y - 2, 0, y, half * .58, y - 2,
                  fill=belly_hi, width=max(1, round(1.4 * s)), smooth=True, capstyle=tk.ROUND)
+        # Faint furnace glow in the belly when the dragon is breathing fire.
+        if fire:
+            glow = color(mix((255, 151, 62), (255, 226, 130), .55 + .3 * math.sin(t * 14)))
+            for y, half in ((-48, 20), (-27, 22), (-5, 21)):
+                line(-half * .55, y - 3, 0, y - 1, half * .55, y - 3, fill=glow,
+                     width=max(1, round(2 * s)), smooth=True, capstyle=tk.ROUND)
 
         # Arms attach below each shoulder; highlights stay inside the outline.
         for side in (-1, 1):
@@ -684,49 +810,69 @@ class DragonApp:
                           smooth=True, splinesteps=12)
             line(side * 38, -44, side * 45, -38, side * 50, -29,
                  fill="#54c8e7", width=max(1, round(1.5 * s)), capstyle=tk.ROUND, smooth=True)
-            line(side * 51, -19, side * 54, -15,
-                 fill="#0874ae", width=max(1, round(1.4 * s)), capstyle=tk.ROUND)
+            line(side * 55, -40, side * 58, -28, side * 56, -16,
+                 fill=deep_blue, width=max(1, round(2 * s)), capstyle=tk.ROUND, smooth=True)
             oval(side * 50 - 11, -3, side * 50 + 12, 19,
                  fill=blue, outline=ink, width=lw)
             for finger in (-1, 0, 1):
                 fx = side * 50 + finger * 6
                 line(fx, 13, fx + side * 2, 20,
                      fill=blue, width=max(3, round(4.2 * s)), capstyle=tk.ROUND, smooth=True)
-                line(fx + side * 2, 19, fx + side * 4, 23,
-                     fill="#f7f1dd", width=max(1, round(1.8 * s)), capstyle=tk.ROUND)
+                poly(fx + side * 2 - 2, 19, fx + side * 4, 27, fx + side * 2 + 3, 19,
+                     fill="#f7f1dd", outline=ink, width=1)
 
         # A tidy pair of small frills frames the crown.
         for side in (-1, 1):
-            mirrored_poly(side, [(45, -111), (56, -119), (53, -105)],
+            mirrored_poly(side, [(45, -111), (58, -121), (54, -105)],
                           fill=red, outline=ink, width=max(1, round(1.5 * s)),
                           smooth=True)
 
+        # Spiked cheek frills sit behind the face.
+        for side in (-1, 1):
+            mirrored_poly(side, [(46, -108), (70, -118), (62, -102), (72, -90), (49, -88)],
+                          fill=red, outline=ink, width=lw, smooth=False, joinstyle=tk.ROUND)
+            line(side * 52, -105, side * 66, -112, fill="#ff7b80",
+                 width=max(1, round(1.8 * s)), capstyle=tk.ROUND)
+
         # Large front-facing head with horns that curl outward.
-        oval(-54, -146, 54, -61, fill=blue, outline=ink, width=lw)
         for side in (-1, 1):
             horn = [(side * 29, -132), (side * 42, -144), (side * 48, -158),
-                    (side * 40, -170), (side * 34, -156), (side * 23, -143)]
+                    (side * 40, -172), (side * 34, -156), (side * 23, -143)]
             poly(*[v for q in horn for v in q], fill="#eeeae1", outline=ink,
                  width=lw, smooth=True, splinesteps=18)
-            line(side * 36, -148, side * 40, -154, fill="#aeb3b5",
-                 width=max(1, round(2 * s)), smooth=True)
-            line(side * 39, -158, side * 43, -163, fill="#aeb3b5",
-                 width=max(1, round(2 * s)), smooth=True)
-        poly(-13, -136, -9, -158, 0, -148, 8, -163, 17, -136, 8, -130, -7, -130,
+            line(side * 27, -141, side * 40, -147, fill="#aeb3b5",
+                 width=max(1, round(1.6 * s)), capstyle=tk.ROUND)
+            line(side * 31, -150, side * 43, -155, fill="#aeb3b5",
+                 width=max(1, round(1.6 * s)), capstyle=tk.ROUND)
+            line(side * 40, -158, side * 43, -166, fill="white",
+                 width=max(1, round(1.8 * s)), capstyle=tk.ROUND, smooth=True)
+        oval(-54, -146, 54, -61, fill=blue, outline=ink, width=lw)
+        arc(-49, -141, 49, -66, 112, 70, outline=light_blue, width=max(2, round(3 * s)))
+        arc(-49, -141, 49, -66, -62, 76, outline=deep_blue, width=max(2, round(3 * s)))
+        poly(-13, -136, -9, -160, 0, -149, 8, -165, 17, -136, 8, -130, -7, -130,
              fill="#ff743f", outline=ink, width=lw, smooth=True, splinesteps=16)
+        line(-5, -138, -3, -150, fill="#ffc07a", width=max(1, round(1.8 * s)), capstyle=tk.ROUND)
         # Cheek pads and tiny temple scales.
-        oval(-52, -107, -31, -80, fill=light_blue, outline=ink, width=max(1, round(1.5 * s)))
-        oval(31, -107, 52, -80, fill=light_blue, outline=ink, width=max(1, round(1.5 * s)))
+        oval(-52, -107, -31, -80, fill=light_blue, outline=ink, width=thin)
+        oval(31, -107, 52, -80, fill=light_blue, outline=ink, width=thin)
         for side in (-1, 1):
             for y in (-91, -81):
                 oval(side * 43 - 3, y, side * 43 + 1, y + 4, fill="#9af0f6", outline="")
+            # Brow ridge scales above each eye.
+            for k in range(3):
+                bx = side * (12 + k * 10)
+                poly(bx - 4, -134 - k, bx, -141 - k * 1.5 + rage * 2, bx + 4, -134 - k,
+                     fill=deep_blue, outline="", smooth=True)
 
         # Eyeballs stay aligned while pupils ease toward the mouse pointer.
         # A sleeping dragon keeps its eyes shut.
         blink = asleep or t % 4.7 < .14
+        iris = color(mix((44, 185, 154), (250, 168, 50), clamp(rage * 1.35, 0, 1)))
         for side in (-1, 1):
             ex = side * 21
             oval(ex - 16, -128, ex + 16, -94, fill="#fffdf3", outline=ink, width=lw)
+            # Soft shading at the top of the eyeball under the lid.
+            arc(ex - 13, -125, ex + 13, -97, 40, 100, outline="#e3dcc8", width=max(2, round(3 * s)))
             if blink:
                 line(ex - 13, -110, ex, -105, ex + 13, -110,
                      fill=ink, width=max(2, round(3 * s)), smooth=True)
@@ -734,26 +880,47 @@ class DragonApp:
                 pupil_x = ex + self.gaze_x
                 pupil_y = -111 + self.gaze_y
                 oval(pupil_x - 9, pupil_y - 12, pupil_x + 8, pupil_y + 11,
-                     fill="#2cb99a" if rage < .65 else "#f4a342", outline="")
-                oval(pupil_x - 4, pupil_y - 11, pupil_x + 4, pupil_y + 10, fill=ink, outline="")
-                oval(pupil_x - 5, pupil_y - 9, pupil_x - 1, pupil_y - 4, fill="white", outline="")
-                oval(pupil_x + 2, pupil_y + 5, pupil_x + 5, pupil_y + 8, fill="#d7ffff", outline="")
+                     fill=iris, outline="")
+                half = max(1.8, 4.2 - rage * 2.4)  # pupils narrow to slits as the dragon gets angry
+                oval(pupil_x - half, pupil_y - 11, pupil_x + half, pupil_y + 10, fill=ink, outline="")
+                oval(pupil_x - 6, pupil_y - 10, pupil_x - 1, pupil_y - 4, fill="white", outline="")
+                oval(pupil_x + 2, pupil_y + 5, pupil_x + 6, pupil_y + 9, fill="#d7ffff", outline="")
+            # Upper lid weighs down toward the nose when angry.
+            lid = rage * 9
+            line(ex - 16, -118 - lid * (.2 if side < 0 else 1.0), ex, -123 + lid * .2,
+                 ex + 16, -118 - lid * (1.0 if side < 0 else .2), fill=blue,
+                 width=max(2, round(5 * s * clamp(rage * 1.4, 0, 1))), capstyle=tk.ROUND, smooth=True) if rage > .3 else None
             brow_y = -136 + rage * 8
-            line(ex - 15, brow_y - (3 if not angry else 0), ex, brow_y - 5,
-                 ex + 15, brow_y - (3 if not angry else 0), fill=ink,
-                 width=max(2, round((2.5 + rage * 2) * s)), capstyle=tk.ROUND, smooth=True)
+            inner_drop = rage * 6 * (1 if angry else .3)
+            xa, xb = (ex - 15, ex + 15) if side < 0 else (ex + 15, ex - 15)
+            # Inner brow end (near the nose) slopes down when angry.
+            if side < 0:
+                line(ex - 15, brow_y - 3, ex, brow_y - 5 + inner_drop * .5, ex + 15, brow_y - 1 + inner_drop,
+                     fill=ink, width=max(2, round((2.5 + rage * 2) * s)), capstyle=tk.ROUND, smooth=True)
+            else:
+                line(ex - 15, brow_y - 1 + inner_drop, ex, brow_y - 5 + inner_drop * .5, ex + 15, brow_y - 3,
+                     fill=ink, width=max(2, round((2.5 + rage * 2) * s)), capstyle=tk.ROUND, smooth=True)
 
         # Muzzle, nostrils, grin and fangs; the roar opens into a shaded mouth.
         oval(-40, -99, 40, -63, fill=light_blue, outline=ink, width=lw)
-        oval(-27, -95, -4, -77, fill="#5bcbe8", outline="")
-        oval(4, -95, 27, -77, fill="#5bcbe8", outline="")
+        oval(-27, -96, -4, -78, fill="#5bcbe8", outline="")
+        oval(4, -96, 27, -78, fill="#5bcbe8", outline="")
+        arc(-30, -98, 30, -66, 30, 120, outline="#c6f6ff", width=max(1, round(2 * s)))
         oval(-22, -91, -13, -84, fill=ink, outline="")
         oval(13, -91, 22, -84, fill=ink, outline="")
+        # Remember where nostrils and the mouth are so smoke and fire can spawn there.
+        self.nostrils = (p(-17.5, -90), p(17.5, -90))
+        self.mouth = p(0, -64)
         if fire:
-            oval(-20, -79, 20, -58, fill="#47182c", outline=ink, width=max(1, round(1.5 * s)))
-            oval(-10, -64, 11, -58, fill="#ed5365", outline="")
-            for x in (-16, 9):
-                poly(x, -79, x + 7, -78, x + 5, -70, fill="#fffdf1", outline=ink,
+            oval(-21, -80, 21, -57, fill="#2b0d1f", outline=ink, width=max(1, round(1.5 * s)))
+            glow_t = .5 + .5 * math.sin(t * 22)
+            oval(-14, -72, 14, -58, fill=color(mix((238, 90, 40), (255, 140, 50), glow_t)), outline="")
+            oval(-8, -66, 8, -58, fill=color(mix((255, 196, 80), (255, 244, 170), glow_t)), outline="")
+            for x in (-17, 10):
+                poly(x, -80, x + 8, -79, x + 6, -70, fill="#fffdf1", outline=ink,
+                     width=max(1, round(1 * s)))
+            for x in (-12, 5):
+                poly(x, -57, x + 7, -57, x + 4, -64, fill="#fffdf1", outline=ink,
                      width=max(1, round(1 * s)))
         else:
             line(-28, -78, -16, -70, 0, -74, 16, -70, 28, -78,
@@ -765,75 +932,43 @@ class DragonApp:
             oval(side * 34 - 4, -83, side * 34 + 1, -79, fill="#f39a9a", outline="")
             oval(side * 40 - 2, -89, side * 40 + 1, -86, fill="#fac0b3", outline="")
 
-        # Deadline rage: a big stylized flame with layered tongues and flying licks.
-        flame_length = 0
+        # Nostril smoke.
+        for x, y, vx, vy, age, life, r0 in self.smoke:
+            u = age / life
+            r = r0 * (1 + u * 1.8)
+            c.create_oval(x - r, y - r, x + r, y + r,
+                          fill=color(gradient(SMOKE_STOPS, u)), outline="")
+
+        # Fire breath: layered teardrop particles that cool from white-hot to ember.
         if fire:
-            flame_length = 70 + 34 * rage
-            L = flame_length
-            right = [(8, 0), (15, .1), (26, .26), (37, .45), (42, .64),
-                     (49, .84), (49, .84), (41, .78), (37, .97), (37, .97),
-                     (28, .85), (21, 1.04), (21, 1.04), (12, .88), (0, 1.12), (0, 1.12)]
-            left = [(-x, y) for x, y in reversed(right[:-1])]
-            outline_pts = right + left
-
-            def flame_layer(wid, ln, phase, fill, edge="", edge_w=1):
-                values = []
-                speed = 10 + rage * 6
-                for x, y in outline_pts:
-                    wob = math.sin(t * speed + y * 5 + phase)
-                    sway = math.sin(t * 7 + phase) * 5 * y
-                    values.extend((x * wid * (1 + .05 * wob) + sway,
-                                   -77 + y * ln + abs(wob) * 2.5 * y))
-                kw = dict(fill=fill, smooth=True, splinesteps=14, joinstyle=tk.ROUND)
-                if edge:
-                    kw.update(outline=edge, width=edge_w)
-                else:
-                    kw.update(outline="")
-                poly(*values, **kw)
-
-            flame_layer(1.0, L, 0.0, "#ee4b2b", ink, max(2, round(2.4 * s)))
-            flame_layer(.70, L * .86, 1.3, "#ff8f2b")
-            flame_layer(.38, L * .62, 2.6, "#ffe56b")
-
-            # Curling swirl strokes inside the flame.
-            for k, (sx, sy) in enumerate(((-14, .30), (12, .42), (-6, .56))):
-                wob = math.sin(t * 9 + k * 2)
-                x0 = sx + wob * 2
-                y0 = -77 + L * sy
-                line(x0, y0, x0 + 7, y0 + 8, x0 + 3, y0 + 18,
-                     fill="#ffc94a" if k != 1 else "#ee4b2b",
-                     width=max(1, round(2 * s)), smooth=True, capstyle=tk.ROUND)
-
-            # Detached flame licks drifting off to the sides.
-            for i in range(4):
-                side = -1 if i % 2 else 1
-                ph = (t * .9 + i * .27) % 1
-                lx = side * (36 + ph * 26 + i * 4)
-                ly = -77 + L * (.25 + ph * .7)
-                r = (1 - ph) * 5.5 + 1.5
-                drop = [(0, -2 * r), (.7 * r, -.6 * r), (r, .4 * r), (0, r),
-                        (-r, .4 * r), (-.7 * r, -.6 * r)]
-                values = []
-                for dx, dy in drop:
-                    values.extend((lx + dx, ly + dy))
-                poly(*values, fill="#ffb02e" if ph < .5 else "#ee4b2b",
-                     outline=ink, width=1, smooth=True, splinesteps=10)
-
-        next_particles = []
-        for x, y, age, velocity in self.particles[-16:]:
-            age += .045
-            y += velocity * s
-            x += math.sin(t * 5 + age * 9) * .45 * s
-            if age < 1:
-                r = max(1, (1 - age) * 3 * s)
+            mx, my = self.mouth
+            core = 1 + .12 * math.sin(t * 40)
+            gr = (13 + 9 * rage) * s * core
+            c.create_oval(mx - gr, my - gr * .8, mx + gr, my + gr * .8, fill="#f2652a", outline="")
+            gr *= .62
+            c.create_oval(mx - gr, my - gr * .8, mx + gr, my + gr * .8, fill="#ffc24a", outline="")
+            gr *= .5
+            c.create_oval(mx - gr, my - gr * .8, mx + gr, my + gr * .8, fill="#fff3b0", outline="")
+        for x, y, vx, vy, age, life, r0, kind in sorted(self.flames, key=lambda f: -f[4] / f[5]):
+            u = age / life
+            if kind:
+                r = max(1.0, r0 * (1 - u * .55))
                 c.create_oval(x - r, y - r, x + r, y + r,
-                              fill="#ffd16b" if age < .55 else "#f07855", outline="")
-                next_particles.append([x, y, age, velocity])
-        self.particles = next_particles
-        if fire and now >= self.next_ember_at and len(self.particles) < 16:
-            ex, ey = p(0, -77 + flame_length * 1.1)
-            self.particles.append([ex, ey, 0, 1.2 + rage * .6])
-            self.next_ember_at = now + .12
+                              fill=color(gradient(FLAME_STOPS, .05 + u * .55)), outline="")
+                continue
+            r = max(1.5, r0 * (1 - u * .62))
+            sp = math.hypot(vx, vy) or 1.0
+            ux, uy = vx / sp, vy / sp
+            nx, ny = -uy, ux
+            tail = r * (2.0 - u * .7)
+            for layer, (size, offset) in enumerate(((1.0, 0.0), (.72, .2), (.42, .4))):
+                rr, tl = r * size, tail * size
+                pts = (x - ux * tl, y - uy * tl,
+                       x + nx * rr - ux * rr * .15, y + ny * rr - uy * rr * .15,
+                       x + ux * rr * 1.05, y + uy * rr * 1.05,
+                       x - nx * rr - ux * rr * .15, y - ny * rr - uy * rr * .15)
+                c.create_polygon(*pts, fill=color(gradient(FLAME_STOPS, u - offset)),
+                                 outline="", smooth=True, splinesteps=8)
 
         # Floating Zzz while there is nothing to guard.
         if asleep:
@@ -855,9 +990,9 @@ class DragonApp:
         c.create_oval(x1 + 12, y1 + 13, x1 + 26, y1 + 27, fill=color(self.rgb), outline="")
         c.create_text(x1 + 34, (y1 + y2) / 2 - 3, text=text, anchor="w",
                       fill="#f6f1e7", font=(FONT, 10, "bold"))
-        mx1, my, mx2 = x1 + 12, y2 - 5, x2 - 12
-        c.create_line(mx1, my, mx2, my, fill="#414356", width=2)
-        c.create_line(mx1, my, mx1 + (mx2 - mx1) * urgent, my,
+        mx1, my_, mx2 = x1 + 12, y2 - 5, x2 - 12
+        c.create_line(mx1, my_, mx2, my_, fill="#414356", width=2)
+        c.create_line(mx1, my_, mx1 + (mx2 - mx1) * urgent, my_,
                       fill=color(self.rgb), width=2)
 
     # ---- quest board ----------------------------------------------------
