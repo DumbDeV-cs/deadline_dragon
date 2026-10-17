@@ -12,7 +12,7 @@ Deadline entry accepts many forms:
   2026-11-30   2026-11-30 14:00:00   2026-11   or a plain number of days
 The quest board also has a month calendar and quick-pick buttons.
 """
-
+# totally vibe coded
 import calendar
 import math
 import random
