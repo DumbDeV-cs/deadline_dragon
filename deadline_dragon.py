@@ -2,7 +2,7 @@
 
 Run with: python deadline_dragon.py
 
-Controls
+Controls 👀👀
   drag        move the dragon (its position is remembered)
   left-click  poke (or press Space while it has focus)
   right-click menu: quest board, poke, stay-on-top, reset position, quit
