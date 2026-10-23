@@ -9,7 +9,7 @@ Controls 👀👀
 
 Deadline entry accepts many forms:
   tomorrow 5pm   fri   today 17:30   +3d   +1w   2h   45min
-  2026-11-30   2026-11-30 14:00:00   2026-11   or a plain number of days
+  2026-11-30   2026-11-30 14:00:00   2026-11   or a plain number of days put whatever you wnt
 The quest board also has a month calendar and quick-pick buttons.
 """
 # totally vibe coded
